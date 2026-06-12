@@ -1,0 +1,4 @@
+# Local-only test notes — never publish to the public repo.
+*.local.md
+TEST-LEDGER.local.md
+.DS_Store

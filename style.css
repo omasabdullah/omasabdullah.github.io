@@ -1,0 +1,40 @@
+:root {
+  --fg: #1a1a1a;
+  --muted: #666;
+  --accent: #2a5db0;
+  --bg: #ffffff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  line-height: 1.6;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+}
+
+header h1 { margin-bottom: 0.25rem; font-size: 2rem; }
+.tagline { color: var(--muted); margin-top: 0; }
+
+main { margin-top: 2rem; }
+section { margin-bottom: 2.5rem; }
+h2 { font-size: 1.25rem; border-bottom: 1px solid #eee; padding-bottom: 0.3rem; }
+
+ul#updates { list-style: none; padding-left: 0; }
+ul#updates li { margin-bottom: 0.75rem; }
+ul#updates .date { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 0.5rem; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+article header { margin-bottom: 1.5rem; }
+article .meta { color: var(--muted); font-size: 0.95rem; }
+.contact { background: #f6f8fa; border: 1px solid #e6e8eb; border-radius: 8px; padding: 1rem 1.25rem; margin: 1.5rem 0; }
+.contact dt { font-weight: 600; color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.contact dd { margin: 0 0 0.75rem; }
+
+footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #eee; color: var(--muted); font-size: 0.9rem; }
