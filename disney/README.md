@@ -11,19 +11,27 @@ won't show up in search. Share the link directly.
 
 ## What it does
 
+- **One continuous scroll.** All nine days render top to bottom in order — the
+  airport, then Animal Kingdom, then Magic Kingdom, all the way to the flight
+  home. Each day ends with a *"Day 3 done · keep scrolling → Day 4"* marker, so
+  you're never left at a dead end wondering whether that was everything.
+- **The nav bar is a map, not a switcher.** The day pills jump you to a day and
+  then follow you as you scroll: the active pill, the accent colour and a thin
+  progress line under the nav all track where you are in the trip. ← / → step
+  between days.
 - **Right now** — resolves the current time at the resort (`America/New_York`)
   no matter what timezone your phone is in, then shows what's happening, what's
-  next, a live countdown, and a red "now" line in the timeline. Before the trip
-  it's a countdown to the 5:00 AM alarm.
+  next, a live countdown, and a red "now" line that moves down the timeline as
+  the day goes on. Before the trip it's a countdown to the 5:00 AM alarm.
+  "Show in the agenda" drops you at that exact entry.
 - **Who are you?** — pick your name and every Lightning Lane, table and room
   you're on is highlighted; everything you're *not* on dims. `Just <name>`
-  strips the day down to only your items.
+  strips all nine days down to only your items.
 - **Lightning Lane windows** — the return window renders as a bar that fills in
   real time, with "Open now · 34 min left to tap in" / "Opens in 50 min".
   Rider Switch and the kids who don't need a pass are flagged.
-- **Nine days** — swipe, tap the day pills, or use ← / → on a keyboard.
-- **Works offline** — a service worker pre-caches the whole app. Park wifi is
-  bad and half of us are roaming from Toronto.
+- **Works offline** — a service worker caches the whole app. Park wifi is bad
+  and half of us are roaming from Toronto.
 - **Add to calendar** — whole trip or a single day, generated in the browser.
 - Live weather for Lake Buena Vista (Open-Meteo, keyless, fails silently).
 - Light + dark mode, respects `prefers-reduced-motion`, installable to the
@@ -35,12 +43,15 @@ Nothing is written to your device — no `localStorage`, no cookies. All state
 lives in the URL:
 
 ```
-/disney/?me=jon          # Jon's view
-/disney/?day=4           # Hollywood Studios
-/disney/?me=jon&day=4&only=1   # only what Jon is on, that day
+/disney/?me=jon                # Jon's view
+/disney/?day=4                 # opens scrolled to Hollywood Studios
+/disney/?me=jon&day=4&only=1   # only Jon's items, landing on day 4
+/disney/#day-7                 # also works
 ```
 
-So a personalised link is bookmarkable and shareable. Send each person theirs.
+The `day` parameter updates itself as you scroll, so "copy link" always points
+at what you're looking at. A personalised link is bookmarkable and shareable —
+send each person theirs.
 
 ## Editing the agenda
 
@@ -59,8 +70,12 @@ Times are 24-hour strings in resort local time. `who: 'all'` means all 16.
 `llExempt: true` (Aurora, Mateo, Layla, Skyla) get the "Lightning Lane not
 required" asterisk automatically.
 
-After editing, **bump `CACHE` in `sw.js`** (e.g. `disney-2026-v2`) so phones
-that already have the old version pick up the change.
+After editing, **bump `CACHE` in `sw.js`** (e.g. `v2` → `v3`).
+
+The service worker is deliberately **network-first**: when there's a usable
+connection everyone always gets the current times, and the cache only kicks in
+when the network doesn't answer within 2.5s. Showing someone a cached copy of
+yesterday's Lightning Lane window would be worse than showing nothing.
 
 ```bash
 git add -A && git commit -m "Update Lightning Lane times" && git push

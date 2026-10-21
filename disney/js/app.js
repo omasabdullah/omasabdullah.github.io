@@ -8,6 +8,7 @@
   /* ------------------------------------------------------------- helpers -- */
 
   const $ = (s, r) => (r || document).querySelector(s);
+  const $$ = (s, r) => Array.prototype.slice.call((r || document).querySelectorAll(s));
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const svg = (id, cls) =>
@@ -15,6 +16,7 @@
     ` aria-hidden="true" focusable="false"><use href="#${id}"/></svg>`;
 
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const SMOOTH = REDUCED ? 'auto' : 'smooth';
 
   /* ---------------------------------------------------------------- time -- */
   /* Everything is anchored to resort time so the page reads the same whether
@@ -162,23 +164,29 @@
 
   /* --------------------------------------------------------------- state -- */
 
-  const state = { me: null, dayN: null, mineOnly: false, open: {} };
+  const state = { me: null, activeDay: 1, mineOnly: false, open: {}, jumpTo: null };
 
   function readURL() {
     const q = new URLSearchParams(location.search);
     const me = q.get('me');
     state.me = me && BY_ID[me] ? me : null;
-    const d = parseInt(q.get('day'), 10);
-    state.dayN = d >= 1 && d <= DAYS.length ? d : null;
     state.mineOnly = q.get('only') === '1' && !!state.me;
+
+    let d = parseInt(q.get('day'), 10);
+    const h = /^#day-(\d+)$/.exec(location.hash);
+    if (h) d = parseInt(h[1], 10);
+    state.jumpTo = d >= 1 && d <= DAYS.length ? d : null;
+    state.activeDay = state.jumpTo || defaultDayN();
   }
-  function writeURL(push) {
+
+  /* The URL mirrors where you are so any link is shareable. replaceState
+     only — scrolling through nine days must not fill up the back button. */
+  function writeURL() {
     const q = new URLSearchParams();
     if (state.me) q.set('me', state.me);
-    if (state.dayN) q.set('day', String(state.dayN));
+    if (state.activeDay) q.set('day', String(state.activeDay));
     if (state.mineOnly) q.set('only', '1');
-    const url = location.pathname + (q.toString() ? '?' + q : '') + location.hash;
-    history[push ? 'pushState' : 'replaceState']({}, '', url);
+    history.replaceState({}, '', location.pathname + (q.toString() ? '?' + q : ''));
   }
 
   function defaultDayN() {
@@ -187,7 +195,6 @@
     if (hit) return hit.n;
     if (Date.now() < TRIP_START) return 1;
     if (Date.now() > TRIP_END) return DAYS.length;
-    // mid-trip but today isn't a listed date (shouldn't happen) — nearest
     let best = DAYS[0];
     DAYS.forEach((d) => {
       if (Math.abs(atResort(d.date, '12:00') - Date.now()) <
@@ -196,7 +203,6 @@
     return best.n;
   }
 
-  const currentDay = () => DAYS[(state.dayN || 1) - 1];
   const isMine = (item) => !!state.me && !!item._who && item._who.includes(state.me);
   // A card with sub-bookings (the sunset dinners) concerns the whole group even
   // if you personally aren't on one of the tables — never hide or dim it.
@@ -208,16 +214,25 @@
   function renderStrip() {
     const today = resortToday();
     $('#daystrip').innerHTML = DAYS.map((d) => `
-      <button class="daypill" role="tab" data-day="${d.n}" data-theme="${d.theme}"
-        aria-selected="${d.n === state.dayN}" style="--pill:var(--accent)">
+      <a class="daypill" href="#day-${d.n}" data-jumpday="${d.n}"
+        data-theme="${d.theme}" aria-current="${d.n === state.activeDay}"
+        style="--pill:var(--accent)">
         <span class="dp-day">${d.date === today
           ? '<span class="dot"></span><span class="vh">Today, </span>' : ''
         }Day ${d.n} · ${esc(shortDate(d.date).split(', ')[1])}</span>
         <span class="dp-name">${esc(d.kicker)}</span>
-      </button>`).join('');
+      </a>`).join('');
+    centerPill();
+  }
 
-    const sel = $('.daypill[aria-selected="true"]', $('#daystrip'));
-    if (sel) sel.scrollIntoView({ block: 'nearest', inline: 'center', behavior: REDUCED ? 'auto' : 'smooth' });
+  /* Centre the active pill inside its own scroller. Deliberately not
+     scrollIntoView() — that would yank the page while you're scrolling. */
+  function centerPill() {
+    const strip = $('#daystrip');
+    const el = $('.daypill[aria-current="true"]', strip);
+    if (!el) return;
+    const left = el.offsetLeft - (strip.clientWidth - el.offsetWidth) / 2;
+    strip.scrollTo({ left: Math.max(0, left), behavior: SMOOTH });
   }
 
   /* --------------------------------------------------------------- cards -- */
@@ -296,7 +311,8 @@
       ${item.subs ? '' : whoRow(item)}
       ${moreBlock(item)}`;
 
-    return `<li class="tl-item k-${item.type}${dim ? ' is-dim' : ''} reveal" style="--i:${Math.min(idx, 10)}">
+    return `<li class="tl-item k-${item.type}${dim ? ' is-dim' : ''} reveal"
+      id="${item._key}" style="--i:${Math.min(idx, 10)}">
       <span class="tl-time${item.timeLabel ? ' is-label' : ''}">${item.timeLabel
         ? esc(item.timeLabel)
         : `<span>${item.approx ? '~' : ''}${f.t}</span><span class="mer">${f.mer}</span>`}</span>
@@ -310,125 +326,352 @@
     </li>`;
   }
 
-  /* ------------------------------------------------------------ day view -- */
+  /* The "now" line is a single node that gets *moved* as the day progresses,
+     never re-rendered with the timeline — so it stays accurate for hours
+     without disturbing anything around it. */
+  let nowMark = null;
 
-  function renderDay() {
-    const day = currentDay();
-    const today = resortToday();
-    const isToday = day.date === today;
+  function syncNowMarker() {
+    const day = DAYS.find((d) => d.date === resortToday());
+    const list = day ? $(`#day-${day.n} .timeline`) : null;
+    if (!list) { if (nowMark) { nowMark.remove(); nowMark = null; } return; }
+
+    if (!nowMark) {
+      nowMark = document.createElement('li');
+      nowMark.className = 'nowmark';
+      nowMark.id = 'nowmark';
+      nowMark.innerHTML = '<span class="nm-t">Now<br><b></b></span><span class="nm-l"></span>';
+    }
+    $('b', nowMark).textContent = new Date().toLocaleTimeString('en-US',
+      { timeZone: TZ, hour: 'numeric', minute: '2-digit' });
+
+    const now = Date.now();
+    let before = null;
+    for (const item of day.items) {
+      if (item._start <= now) continue;
+      const el = document.getElementById(item._key);
+      if (el && el.parentNode === list) { before = el; break; }
+    }
+    if (before) {
+      if (nowMark.nextElementSibling !== before) list.insertBefore(nowMark, before);
+    } else if (nowMark.parentNode !== list || nowMark.nextElementSibling) {
+      list.appendChild(nowMark);
+    }
+  }
+
+  /* --------------------------------------------------------- the agenda -- */
+  /* All nine days render at once, in order, as one continuous scroll. Day 1
+     runs into day 2 runs into day 3. You never finish a day and fall off a
+     cliff into the footer — there's always more trip below.                 */
+
+  function dayHTML(day) {
+    const isToday = day.date === resortToday();
+    const past = Date.now() > atResort(day.date, '23:59');
     let items = day.items;
     if (state.mineOnly && state.me) items = items.filter((i) => !notMine(i));
 
     const llCount = day.items.filter((i) => i.type === 'll').length;
     const mealCount = day.items.filter((i) => i.type === 'meal').length;
 
-    let rows = '';
-    let markerDone = !isToday;
-    items.forEach((item, i) => {
-      if (!markerDone && item._start > Date.now()) {
-        rows += nowMarkerHTML();
-        markerDone = true;
-      }
-      rows += itemHTML(item, i);
-    });
-    if (!markerDone && isToday) rows += nowMarkerHTML();
+    let rows = items.map(itemHTML).join('');
+    if (!items.length) {
+      rows = `<li class="tl-empty">Nothing today is just for
+        ${esc(BY_ID[state.me].name)} — switch to <strong>Everyone</strong> to see it all.</li>`;
+    }
 
-    $('#dayWrap').innerHTML = `
-      <p class="eyebrow">${isToday ? 'Today' : `Day ${day.n} of ${DAYS.length}`} · ${esc(longDate(day.date))}</p>
-      <div class="dayhead swapin" data-theme="${day.theme}">
-        <span class="dh-top">
-          <span>Day ${day.n}</span>
-          <span>·</span>
-          <span>${esc(shortDate(day.date))}</span>
-          ${day.badge ? `<span class="dh-badge">${esc(day.badge)}</span>` : ''}
-          ${isToday ? '<span class="dh-badge">Today</span>' : ''}
-        </span>
-        <h2 class="dh-title">${esc(day.title)}</h2>
-        <p class="dh-hours">${esc(day.hours)}</p>
-        <div class="dh-foot">
-          ${llCount ? `<span class="dh-chip">${svg('i-bolt')} ${llCount} Lightning Lane${llCount > 1 ? 's' : ''}</span>` : ''}
-          ${mealCount ? `<span class="dh-chip">${svg('i-fork')} ${mealCount} booking${mealCount > 1 ? 's' : ''}</span>` : ''}
-          <span class="dh-chip" id="dayWeather" hidden></span>
-          <button class="dh-chip" id="icsDay">${svg('i-cal')} Add this day</button>
+    const next = DAYS[day.n];
+
+    return `<section class="day${past ? ' is-past' : ''}" id="day-${day.n}"
+        data-theme="${day.theme}" data-dayn="${day.n}" aria-labelledby="dayt-${day.n}">
+      <div class="wrap">
+        <div class="dayhead reveal">
+          <span class="dh-top">
+            <span>Day ${day.n} of ${DAYS.length}</span>
+            <span>·</span>
+            <span>${esc(longDate(day.date))}</span>
+            ${day.badge ? `<span class="dh-badge">${esc(day.badge)}</span>` : ''}
+            ${isToday ? '<span class="dh-badge">Today</span>' : ''}
+          </span>
+          <h2 class="dh-title" id="dayt-${day.n}">${esc(day.title)}</h2>
+          <p class="dh-hours">${esc(day.hours)}</p>
+          <div class="dh-foot">
+            ${llCount ? `<span class="dh-chip">${svg('i-bolt')} ${llCount} Lightning Lane${llCount > 1 ? 's' : ''}</span>` : ''}
+            ${mealCount ? `<span class="dh-chip">${svg('i-fork')} ${mealCount} booking${mealCount > 1 ? 's' : ''}</span>` : ''}
+            <span class="dh-chip" data-wx="${day.date}" hidden></span>
+            <button class="dh-chip" data-icsday="${day.n}">${svg('i-cal')} Add this day</button>
+          </div>
         </div>
+
+        <ol class="timeline">${rows}</ol>
+
+        ${next ? `<div class="daybreak reveal" data-theme="${next.theme}">
+            <span class="db-line"></span>
+            <a class="db-pill" href="#day-${next.n}" data-jumpday="${next.n}">
+              <span class="db-l">Day ${day.n} done · keep scrolling</span>
+              <span class="db-t">Day ${next.n} · ${esc(next.kicker)}</span>
+              ${svg('i-arrowdown', 'db-a')}
+            </a>
+          </div>` : `<div class="tripend reveal">
+            <p class="te-k">${svg('i-star')} That&rsquo;s the whole trip</p>
+            <p class="te-t">Nine days, four rooms, sixteen of us.</p>
+            <p class="te-s">Below: who&rsquo;s in which room, every reservation,
+              and the handful of things worth remembering.</p>
+          </div>`}
       </div>
-
-      <div class="dayswitch">
-        <button class="ds-btn" data-day="${day.n - 1}" ${day.n <= 1 ? 'disabled' : ''}>
-          ${svg('i-chevl')} ${day.n > 1 ? esc(DAYS[day.n - 2].kicker) : 'Back'}
-        </button>
-        <button class="ds-btn" data-day="${day.n + 1}" ${day.n >= DAYS.length ? 'disabled' : ''}>
-          ${day.n < DAYS.length ? esc(DAYS[day.n].kicker) : 'Next'} ${svg('i-chevr')}
-        </button>
-      </div>
-
-      <div class="filterbar">
-        <span class="seg" role="group" aria-label="Filter the day">
-          <button data-only="0" aria-pressed="${!state.mineOnly}">Everyone</button>
-          <button data-only="1" aria-pressed="${state.mineOnly}">${state.me ? 'Just ' + esc(BY_ID[state.me].name) : 'Just me'}</button>
-        </span>
-        <span class="filter-hint">${state.me
-          ? (state.mineOnly ? 'Showing only what you’re on.' : 'Your items are highlighted.')
-          : 'Pick yourself up top to filter.'}</span>
-      </div>
-
-      <ol class="timeline">${rows}</ol>`;
-
-    document.body.dataset.theme = day.theme;
-    $('#dayBand').dataset.theme = day.theme;
-    observeReveals($('#dayWrap'));
-    tick();
-    loadDayWeather(day);
+    </section>`;
   }
 
-  function nowMarkerHTML() {
-    const now = new Date().toLocaleTimeString('en-US',
-      { timeZone: TZ, hour: 'numeric', minute: '2-digit' });
-    return `<li class="nowmark"><span class="nm-t">Now<br>${esc(now)}</span><span class="nm-l"></span></li>`;
+  /** Re-render the whole agenda. keepAnchor pins the viewport to the day
+      you're currently looking at, so filtering doesn't teleport you. */
+  function renderAgenda(keepAnchor) {
+    const anchor = keepAnchor ? $(`#day-${state.activeDay}`) : null;
+    const anchorTop = anchor ? anchor.getBoundingClientRect().top : null;
+
+    $('#agendaFilter').innerHTML = `
+      <span class="seg" role="group" aria-label="Filter the trip">
+        <button data-only="0" aria-pressed="${!state.mineOnly}">Everyone</button>
+        <button data-only="1" aria-pressed="${state.mineOnly}">${state.me ? 'Just ' + esc(BY_ID[state.me].name) : 'Just me'}</button>
+      </span>
+      <span class="filter-hint">${state.me
+        ? (state.mineOnly
+          ? 'Showing only what you’re on, across all nine days.'
+          : 'Your items are highlighted, everything else is dimmed.')
+        : 'Pick yourself up top to filter all nine days.'}</span>`;
+
+    $('#dayWrap').innerHTML = DAYS.map(dayHTML).join('');
+
+    nowMark = null; // the old node went out with the innerHTML
+    observeReveals($('#dayWrap'));
+    measureDays();
+    tick();
+    paintWeather();
+
+    if (anchor) {
+      const el = $(`#day-${state.activeDay}`);
+      if (el) hardScroll(Math.max(0, scrollY + el.getBoundingClientRect().top - anchorTop));
+    }
+  }
+
+  /* ---------------------------------------------------------- scroll spy -- */
+  /* The nav isn't a view switcher any more — it's a map. It follows you. */
+
+  let dayEls = [];
+  function measureDays() {
+    dayEls = $$('#dayWrap .day').map((el) => ({ n: +el.dataset.dayn, el }));
+    measureNav();
+  }
+  function measureNav() {
+    document.documentElement.style.setProperty('--navh', $('#topnav').offsetHeight + 'px');
+  }
+
+  function setActiveDay(n) {
+    if (n === state.activeDay) return;
+    state.activeDay = n;
+    document.body.dataset.theme = DAYS[n - 1].theme;
+    $$('#daystrip .daypill').forEach((p) =>
+      p.setAttribute('aria-current', String(+p.dataset.jumpday === n)));
+    centerPill();
+    writeURL();
+  }
+
+  /* While a jump is animating, the spy must not fight it: mid-flight it would
+     keep re-selecting the day being scrolled away from, which eats the next
+     tap or arrow press. */
+  let spyLock = 0;
+  let userScrolled = false;
+  // Bumped on every jump. A pending settle from an older jump is ignored,
+  // otherwise a stale callback snaps you back to a day you already left.
+  let jumpSeq = 0;
+
+  function spy() {
+    if (!dayEls.length) return;
+    if (Date.now() >= spyLock) {
+      const line = $('#topnav').offsetHeight + 28;
+      let active = dayEls[0].n;
+      for (const d of dayEls) {
+        if (d.el.getBoundingClientRect().top <= line) active = d.n; else break;
+      }
+      setActiveDay(active);
+    }
+    progress();
+  }
+
+  function progress() {
+    const r = $('#dayWrap').getBoundingClientRect();
+    const total = r.height - innerHeight;
+    const p = total > 0 ? Math.min(1, Math.max(0, -r.top / total)) : (r.top < 0 ? 1 : 0);
+    $('#navProgress').style.transform = `scaleX(${p.toFixed(4)})`;
+  }
+
+  /* The page is ~24,000px tall. Smooth-scrolling the full length would be a
+     blur, so only short hops animate; long jumps land instantly and the
+     target flashes so you can see where you were put. */
+  function hardScroll(top) {
+    const el = document.documentElement;
+    el.style.scrollBehavior = 'auto';
+    scrollTo(0, top);
+    // Always restore to '' — never to a captured value, or two overlapping
+    // hard scrolls would leave scroll-behavior:auto stuck on the page.
+    requestAnimationFrame(() => { el.style.scrollBehavior = ''; });
+  }
+
+  const maxScrollY = () =>
+    Math.max(0, document.documentElement.scrollHeight - innerHeight);
+
+  /* Layout position, walked through offsetParent. Deliberately NOT
+     getBoundingClientRect(): that includes transforms, and timeline entries
+     carry a translateY(18px) reveal animation, so measuring an entry that
+     hadn't finished revealing yet landed every deep link 18px too low. */
+  function docTop(el) {
+    let y = 0;
+    for (let n = el; n; n = n.offsetParent) y += n.offsetTop;
+    return y;
+  }
+
+  /* Run a mutation that may change the height of content *above* the reader,
+     then shift the scroll position by exactly as much as their anchor moved,
+     so from their point of view nothing happened. Only applies when the
+     anchor day is actually at or above the nav line; if they're still up in
+     the hero, nothing should move at all. */
+  function preserveScroll(mutate) {
+    const anchor = $(`#day-${state.activeDay}`);
+    const line = $('#topnav').offsetHeight + 28;
+    const before = anchor ? docTop(anchor) : 0;
+    const relevant = !!anchor && before <= scrollY + line;
+    mutate();
+    if (!relevant) return;
+    const shift = docTop(anchor) - before;
+    if (shift) hardScroll(Math.max(0, scrollY + shift));
+  }
+
+  /** Where the page needs to sit for `el` to clear the sticky nav. */
+  function targetTop(el) {
+    const raw = docTop(el) - ($('#topnav').offsetHeight + 14);
+    return Math.min(Math.max(0, raw), maxScrollY());
+  }
+
+  /** Programmatic scroll finished: correct any drift, unlock, then either
+      re-assert the day we were aiming for or work it out from where we are. */
+  /* Nudge the page so `el` sits exactly under the nav, repeatedly over a few
+     frames. Needed because things settle *after* we arrive: weather chips land
+     late, a tapped card expands, and Chrome's own scroll anchoring shifts us a
+     dozen px in response. Only small offsets are corrected, so a real scroll
+     by the user is never fought. */
+  function align(el, until, id) {
+    // Abandon the moment the user takes over, or a newer jump supersedes us —
+    // two overlapping align loops would drag the page between two targets.
+    if (userScrolled || id !== jumpSeq) return;
+    const off = targetTop(el) - scrollY;
+    if (Math.abs(off) > 1 && Math.abs(off) < 140) hardScroll(scrollY + off);
+    if (Date.now() < until) requestAnimationFrame(() => align(el, until, id));
+  }
+
+  function settle(el, dayN, id) {
+    spyLock = 0;
+    if (el) { userScrolled = false; align(el, Date.now() + 700, id); }
+    if (dayN) { setActiveDay(dayN); progress(); } else spy();
+  }
+
+  function jumpTo(target, opts) {
+    opts = opts || {};
+    const el = typeof target === 'string' ? $(target) : target;
+    if (!el) return;
+    const top = targetTop(el);
+    const aim = opts.dayN || 0;
+    const id = ++jumpSeq;
+
+    if (opts.instant || Math.abs(top - scrollY) > innerHeight * 2.5 || REDUCED) {
+      hardScroll(top);
+      settle(el, aim, id);
+      return;
+    }
+    // Freeze the spy for the duration of the animation; scrollend releases it
+    // early, the timeout is the fallback for browsers without scrollend.
+    spyLock = Date.now() + 2000;
+    scrollTo({ top, behavior: 'smooth' });
+    const fin = () => { if (id === jumpSeq) settle(el, aim, id); };
+    if ('onscrollend' in window) addEventListener('scrollend', fin, { once: true });
+    setTimeout(fin, 900);
+  }
+
+  /* Day jumps always land instantly. Days sit 1,500–2,700px apart, and
+     smooth-scrolling that far is just a blur — the nav is a tab bar, you
+     expect to arrive. It also keeps the step deterministic when someone
+     mashes the arrow keys, since there's no animation to race. Short hops to
+     an individual entry still animate (see jumpTo). */
+  function jumpDay(n) {
+    n = Math.max(1, Math.min(DAYS.length, n));
+    setActiveDay(n);
+    jumpTo(`#day-${n}`, { dayN: n, instant: true });
   }
 
   /* ------------------------------------------------------------ live now -- */
 
-  function cdCell(n, l) {
-    return `<span class="cd-cell"><span class="cd-num">${n}</span><span class="cd-lbl">${l}</span></span>`;
+  function cdCell(k, l) {
+    return `<span class="cd-cell"><span class="cd-num" data-cd="${k}">0</span>` +
+      `<span class="cd-lbl">${l}</span></span>`;
   }
+
+  const phaseOf = (now) => now < TRIP_START ? 'pre' : now > TRIP_END ? 'post' : 'live';
+
+  /* Rebuilding these every second would change their height and shunt the
+     whole 24,000px agenda up and down under the reader's thumb. So the DOM is
+     only rebuilt when *what* it describes changes; the ticking numbers are
+     patched in place. */
+  let heroSig = '';
 
   function renderHeroLive() {
     const now = Date.now();
     const host = $('#heroLive');
 
     if (now < TRIP_START) {
+      if (heroSig !== 'pre') {
+        heroSig = 'pre';
+        host.innerHTML = `<div class="countdown">
+          <div class="countdown-grid">
+            ${cdCell('d', 'Days')}${cdCell('h', 'Hours')}${cdCell('m', 'Min')}${cdCell('s', 'Sec')}
+          </div>
+          <p class="eyebrow" style="color:rgba(255,255,255,.6)">Until the 5:00 AM alarm</p>
+        </div>`;
+      }
       const ms = TRIP_START - now;
-      const d = Math.floor(ms / 86400000);
-      const h = Math.floor(ms / 3600000) % 24;
-      const m = Math.floor(ms / 60000) % 60;
-      const s = Math.floor(ms / 1000) % 60;
-      host.innerHTML = `<div class="countdown">
-        <div class="countdown-grid">
-          ${cdCell(d, 'Days')}${cdCell(h, 'Hours')}${cdCell(m, 'Min')}${cdCell(s, 'Sec')}
-        </div>
-        <p class="eyebrow" style="color:rgba(255,255,255,.6)">Until the 5:00 AM alarm</p>
-      </div>`;
+      const v = {
+        d: Math.floor(ms / 86400000),
+        h: Math.floor(ms / 3600000) % 24,
+        m: Math.floor(ms / 60000) % 60,
+        s: Math.floor(ms / 1000) % 60,
+      };
+      $$('[data-cd]', host).forEach((el) => {
+        const t = String(v[el.dataset.cd]);
+        if (el.textContent !== t) el.textContent = t;
+      });
       return;
     }
     if (now > TRIP_END) {
+      if (heroSig === 'post') return;
+      heroSig = 'post';
       host.innerHTML = `<div class="hero-nowcard">
         <span class="nc-eyebrow">${svg('i-star')} That's a wrap</span>
         <p class="nc-title">Home, and somehow still tired</p>
-        <p class="nc-meta">Nine days, four rooms, sixteen of us. Browse any day below.</p>
+        <p class="nc-meta">Nine days, four rooms, sixteen of us. Scroll the whole thing below.</p>
       </div>`;
       return;
     }
 
     const cur = FLAT.filter((i) => i._start <= now && i._stop > now).pop();
     const next = FLAT.find((i) => i._start > now);
-    host.innerHTML = `<div class="hero-nowcard">
+    const focus = cur || next;
+    const sig = `live|${cur ? cur._key : '-'}|${next ? next._key : '-'}`;
+    if (sig === heroSig) return;
+    heroSig = sig;
+    host.innerHTML = `<a class="hero-nowcard" href="#${focus ? focus._key : 'nowmark'}" data-jumpnow>
       <span class="nc-eyebrow"><span class="pulse"></span> ${cur ? 'Happening now' : 'Up next'}</span>
-      <p class="nc-title">${(cur || next || {}).title || 'Free time'}</p>
+      <p class="nc-title">${(focus || {}).title || 'Free time'}</p>
       <p class="nc-meta">${cur
         ? (next ? `Next: ${esc(next.title)} at ${fmt12s(next.t)}` : 'Last thing on the list.')
         : (next ? `Starts at ${fmt12s(next.t)} · in ${dur(next._start - now)}` : 'Nothing left today.')}</p>
-    </div>`;
+      <span class="nc-go">Jump to it in the agenda ${svg('i-arrowdown')}</span>
+    </a>`;
   }
 
   function liveCard(kind, item, now) {
@@ -442,20 +685,43 @@
     const mine = isMine(item);
     const notme = notMine(item);
     const live = kind === 'now';
-    let count = '';
-    if (live && item._end && item._end > now) count = `${dur(item._end - now)} left in the window`;
-    else if (!live) count = `in ${dur(item._start - now)}`;
+    // data-live lets tick() refresh just this string, in place.
+    let count = '', tagged = '';
+    if (live && item._end && item._end > now) {
+      count = `${dur(item._end - now)} left in the window`;
+      tagged = ` data-live="end:${item._key}"`;
+    } else if (!live) {
+      count = `in ${dur(item._start - now)}`;
+      tagged = ` data-live="start:${item._key}"`;
+    }
 
     return `<div class="livecard${live ? ' is-now' : ''} k-${item.type}" data-theme="${item._day.theme}">
       <p class="lc-eyebrow">${live ? '<span class="pulse"></span>' : svg('i-clock')}
         ${live ? 'Happening now' : 'Next up'}</p>
       <h3 class="lc-title">${item.title}</h3>
       <p class="lc-when">${esc(kindLabel(item))} · ${item.timeLabel ? esc(item.timeLabel) : fmt12s(item.t)}${item.end ? ` – ${fmt12s(item.end)}` : ''}</p>
-      ${count ? `<p class="lc-count">${esc(count)}</p>` : ''}
+      ${count ? `<p class="lc-count"${tagged}>${esc(count)}</p>` : ''}
       ${item.note ? `<p class="lc-note">${esc(item.note)}</p>` : ''}
       ${state.me && item._who ? `<p class="lc-note"><strong>${mine ? 'You’re on this one.' : ''}${notme ? 'Not your group — you’re free.' : ''}</strong></p>` : ''}
       ${item._who ? whoRow(item) : ''}
+      <a class="lc-go" href="#${item._key}" data-jumpnow>Show in the agenda ${svg('i-arrowdown')}</a>
     </div>`;
+  }
+
+  let nowSig = '';
+
+  /** Refresh the live countdown strings without touching the DOM structure. */
+  function patchLive() {
+    const now = Date.now();
+    $$('[data-live]').forEach((el) => {
+      const parts = el.dataset.live.split(':');
+      const item = FLAT.find((i) => i._key === parts[1]);
+      if (!item) return;
+      const t = parts[0] === 'end'
+        ? `${dur(Math.max(0, item._end - now))} left in the window`
+        : `in ${dur(Math.max(0, item._start - now))}`;
+      if (el.textContent !== t) el.textContent = t;
+    });
   }
 
   function renderNow() {
@@ -463,6 +729,8 @@
     const grid = $('#nowGrid');
 
     if (now < TRIP_START) {
+      if (nowSig === 'pre') { patchLive(); return; }
+      nowSig = 'pre';
       const d1 = DAYS[0];
       $('#nowTitle').textContent = 'Not long now';
       grid.innerHTML = `
@@ -470,27 +738,35 @@
           <p class="lc-eyebrow">${svg('i-clock')} First move</p>
           <h3 class="lc-title">${esc(d1.items[0].title)}</h3>
           <p class="lc-when">${esc(longDate(d1.date))} · ${fmt12s(d1.items[0].t)}</p>
-          <p class="lc-count">${esc(dur(TRIP_START - now))}</p>
+          <p class="lc-count" data-live="start:${d1.items[0]._key}">${esc(dur(TRIP_START - now))}</p>
           <p class="lc-note">This page goes live the moment the trip starts: what's happening right now, what's next, and whether you're on it.</p>
+          <a class="lc-go" href="#day-1" data-jumpnow>Start at day 1 ${svg('i-arrowdown')}</a>
         </div>
         <div class="livecard" data-theme="rest">
           <p class="lc-eyebrow">${svg('i-user')} Make it yours</p>
           <h3 class="lc-title">Tap &ldquo;Who are you?&rdquo;</h3>
-          <p class="lc-note">Pick your name and every Lightning Lane, table and room you&rsquo;re on gets highlighted. The choice lives in the link, so bookmark it or send it to your own phone.</p>
+          <p class="lc-note">Pick your name and every Lightning Lane, table and room you&rsquo;re on gets highlighted, all nine days. The choice lives in the link, so bookmark it or send it to your own phone.</p>
         </div>`;
       return;
     }
     if (now > TRIP_END) {
+      if (nowSig === 'post') return;
+      nowSig = 'post';
       $('#nowTitle').textContent = 'The trip';
       grid.innerHTML = `<div class="livecard is-empty"><p class="lc-title">All nine days are below</p>
-        <p class="lc-note">Tap any day to relive it.</p></div>`;
+        <p class="lc-note">Scroll straight through from the airport to the flight home.</p></div>`;
       return;
     }
 
     const cur = FLAT.filter((i) => i._start <= now && i._stop > now).pop();
     const next = FLAT.find((i) => i._start > now);
-    $('#nowTitle').textContent = 'Right now';
-    grid.innerHTML = liveCard('now', cur, now) + liveCard('next', next, now);
+    const sig = `live|${cur ? cur._key : '-'}|${next ? next._key : '-'}|${state.me}`;
+    if (sig !== nowSig) {
+      nowSig = sig;
+      $('#nowTitle').textContent = 'Right now';
+      grid.innerHTML = liveCard('now', cur, now) + liveCard('next', next, now);
+    }
+    patchLive();
   }
 
   /* -------------------------------------------------------------- statics -- */
@@ -520,7 +796,7 @@
         ${m.note ? `<span class="d-meta">${esc(m.note)}</span>` : ''}
         ${m.subs ? `<span class="d-meta">${m.subs.map((s) =>
           `${fmt12s(s.t)} ${esc(s.title)} — ${(s.who || []).map((i) => esc(BY_ID[i].name)).join(', ')}`).join('<br>')}</span>` : ''}
-        <span class="d-day"><button class="chip" data-day="${m._day.n}">${svg('i-chevr')} Day ${m._day.n}</button>
+        <span class="d-day"><a class="chip" href="#${m._key}" data-jumpnow>${svg('i-chevr')} Day ${m._day.n}</a>
           ${state.me && !mine ? '<span class="tag plain">Not your table</span>' : ''}
           ${state.me && mine ? '<span class="tag plain">You</span>' : ''}</span>
       </div>`;
@@ -568,7 +844,8 @@
     writeURL();
     renderWhoBtn();
     renderPeopleGrid();
-    renderDay();
+    nowSig = heroSig = ''; // identity changed, so the live cards must rebuild
+    renderAgenda(true);
     renderRooms();
     renderDining();
     renderNow();
@@ -649,26 +926,49 @@
     } catch (e) { /* offline is fine */ }
   }
 
-  async function loadDayWeather(day) {
-    const host = $('#dayWeather');
-    if (!host) return;
+  /* One request covers the whole trip; each day head paints from the cache.
+     Forecasts only reach ~16 days out, so early on most days come back empty
+     and simply stay hidden. */
+  const WX_BY_DATE = {};
+
+  async function loadTripWeather() {
     try {
       const u = `https://api.open-meteo.com/v1/forecast?latitude=${TRIP.coords.lat}` +
         `&longitude=${TRIP.coords.lon}&daily=temperature_2m_max,temperature_2m_min,weather_code,` +
         `precipitation_probability_max&timezone=${encodeURIComponent(TZ)}` +
-        `&start_date=${day.date}&end_date=${day.date}`;
+        `&start_date=${DAYS[0].date}&end_date=${DAYS[DAYS.length - 1].date}`;
       const r = await fetch(u);
       if (!r.ok) return;
-      const j = await r.json();
-      const d = j.daily;
-      if (!d || !d.time || !d.time.length) return;
-      const w = WX[d.weather_code[0]] || ['', ''];
-      const hi = Math.round(d.temperature_2m_max[0]);
-      const lo = Math.round(d.temperature_2m_min[0]);
-      host.innerHTML = `${w[1]} ${esc(w[0])} · ${hi}° / ${lo}°C` +
-        (d.precipitation_probability_max[0] != null ? ` · ${d.precipitation_probability_max[0]}% rain` : '');
-      host.hidden = false;
-    } catch (e) { /* forecast only reaches ~16 days out */ }
+      const d = (await r.json()).daily;
+      if (!d || !d.time) return;
+      d.time.forEach((date, i) => {
+        WX_BY_DATE[date] = {
+          code: d.weather_code[i],
+          hi: Math.round(d.temperature_2m_max[i]),
+          lo: Math.round(d.temperature_2m_min[i]),
+          rain: d.precipitation_probability_max[i],
+        };
+      });
+      paintWeather();
+    } catch (e) { /* offline is fine */ }
+  }
+
+  function paintWeather() {
+    // Revealing nine chips adds ~600px above the fold. Without compensation
+    // the page lurches out from under whoever is mid-scroll when the forecast
+    // finally arrives, and any ?day= deep link lands short.
+    preserveScroll(() => {
+      $$('[data-wx]').forEach((host) => {
+        const f = WX_BY_DATE[host.dataset.wx];
+        if (!f || f.hi == null) return;
+        const w = WX[f.code] || ['', ''];
+        host.innerHTML = `${w[1]} ${esc(w[0])} · ${f.hi}° / ${f.lo}°C` +
+          (f.rain != null ? ` · ${f.rain}% rain` : '');
+        host.hidden = false;
+      });
+    });
+    measureDays();
+    spy();
   }
 
   /* ---------------------------------------------------------------- tick -- */
@@ -677,6 +977,7 @@
     const now = Date.now();
     renderHeroLive();
     renderNow();
+    syncNowMarker();
 
     // Lightning Lane window bars
     DAYS.forEach((day) => day.items.forEach((item) => {
@@ -722,27 +1023,39 @@
 
   /* ------------------------------------------------------------- actions -- */
 
-  function goDay(n, push) {
-    n = Math.max(1, Math.min(DAYS.length, n));
-    if (n === state.dayN) return;
-    state.dayN = n;
-    writeURL(push);
-    renderStrip();
-    renderDay();
-    const top = $('#dayBand').getBoundingClientRect().top + scrollY - 108;
-    if (scrollY > top + 400 || scrollY < top - 2000) {
-      scrollTo({ top, behavior: REDUCED ? 'auto' : 'smooth' });
-    }
-  }
-
   function wire() {
-    // day strip + any [data-day] button
     document.addEventListener('click', (e) => {
-      const d = e.target.closest('[data-day]');
-      if (d && !d.disabled) {
-        goDay(parseInt(d.dataset.day, 10), true);
-        if (d.closest('.dine')) {
-          scrollTo({ top: $('#dayBand').offsetTop - 108, behavior: REDUCED ? 'auto' : 'smooth' });
+      // day pills / "keep scrolling" dividers — scroll, never swap views
+      const jd = e.target.closest('[data-jumpday]');
+      if (jd) {
+        e.preventDefault();
+        jumpDay(parseInt(jd.dataset.jumpday, 10));
+        return;
+      }
+      // deep links straight to one timeline entry
+      const jn = e.target.closest('[data-jumpnow]');
+      if (jn) {
+        e.preventDefault();
+        const id = (jn.getAttribute('href') || '').slice(1);
+        const el = document.getElementById(id);
+        if (el) {
+          // Expand before measuring, and without the transition, so the
+          // layout is final when we work out where to scroll. Animating it
+          // here would move the target while we were travelling to it.
+          const card = $('[data-exp]', el);
+          if (card && card.getAttribute('aria-expanded') === 'false') {
+            card.classList.add('insta');
+            state.open[card.dataset.exp] = true;
+            card.setAttribute('aria-expanded', 'true');
+            void el.offsetHeight;
+            requestAnimationFrame(() => card.classList.remove('insta'));
+          }
+          // No point animating in something you just asked to be taken to.
+          el.classList.add('in');
+          jumpTo(el);
+          el.classList.remove('flash');
+          void el.offsetWidth;
+          el.classList.add('flash');
         }
         return;
       }
@@ -757,7 +1070,7 @@
         if (!state.me) { openWho(); return; }
         state.mineOnly = only.dataset.only === '1';
         writeURL();
-        renderDay();
+        renderAgenda(true);
         return;
       }
       const exp = e.target.closest('[data-exp]');
@@ -779,9 +1092,11 @@
     $('#icsAll').addEventListener('click', () =>
       download(buildICS(FLAT, 'Twins Disney Trip 2026'), 'twins-disney-trip-2026.ics'));
     document.addEventListener('click', (e) => {
-      if (!e.target.closest('#icsDay')) return;
-      const day = currentDay();
-      download(buildICS(day.items, `Disney Day ${day.n}`), `disney-2026-day-${day.n}.ics`);
+      const b = e.target.closest('[data-icsday]');
+      if (!b) return;
+      const day = DAYS[parseInt(b.dataset.icsday, 10) - 1];
+      download(buildICS(day.items, `Disney Day ${day.n} · ${day.kicker}`),
+        `disney-2026-day-${day.n}.ics`);
     });
 
     // share
@@ -797,39 +1112,34 @@
       } catch (e) { /* user cancelled */ }
     });
 
-    // keyboard: left/right switch days
+    // keyboard: left/right skip a day forward or back
     document.addEventListener('keydown', (e) => {
-      if (e.target.closest('input, textarea, dialog')) return;
-      if (e.key === 'ArrowRight') goDay((state.dayN || 1) + 1, true);
-      if (e.key === 'ArrowLeft') goDay((state.dayN || 1) - 1, true);
+      const t = e.target;
+      if (t instanceof Element && t.closest('input, textarea, dialog')) return;
+      if (e.key === 'ArrowRight') { e.preventDefault(); jumpDay(state.activeDay + 1); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); jumpDay(state.activeDay - 1); }
     });
 
-    // swipe between days on the timeline
-    let sx = 0, sy = 0, swiping = false;
-    const band = $('#dayBand');
-    band.addEventListener('touchstart', (e) => {
-      if (e.touches.length !== 1) return;
-      sx = e.touches[0].clientX; sy = e.touches[0].clientY; swiping = true;
-    }, { passive: true });
-    band.addEventListener('touchend', (e) => {
-      if (!swiping) return;
-      swiping = false;
-      const t = e.changedTouches[0];
-      const dx = t.clientX - sx, dy = t.clientY - sy;
-      if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 2) {
-        goDay((state.dayN || 1) + (dx < 0 ? 1 : -1), true);
-      }
-    }, { passive: true });
-
-    // sticky shadow + back to top
+    // sticky shadow, back-to-top, scroll spy — one rAF-throttled listener
     const nav = $('#topnav'), top = $('#toTop');
+    let raf = 0;
     const onScroll = () => {
-      nav.classList.toggle('is-stuck', scrollY > innerHeight * 0.92);
-      top.classList.toggle('show', scrollY > innerHeight * 1.4);
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        nav.classList.toggle('is-stuck', scrollY > innerHeight * 0.92);
+        top.classList.toggle('show', scrollY > innerHeight * 1.4);
+        spy();
+      });
     };
     addEventListener('scroll', onScroll, { passive: true });
+    addEventListener('resize', () => { measureNav(); spy(); });
+    // A hands-on scroll immediately outranks an in-flight jump. touchmove,
+    // not touchstart, so tapping a day pill doesn't cancel its own jump.
+    ['wheel', 'touchmove'].forEach((ev) =>
+      addEventListener(ev, () => { spyLock = 0; userScrolled = true; }, { passive: true }));
     onScroll();
-    top.addEventListener('click', () => scrollTo({ top: 0, behavior: REDUCED ? 'auto' : 'smooth' }));
+    top.addEventListener('click', () => scrollTo({ top: 0, behavior: SMOOTH }));
 
     // hero parallax
     if (!REDUCED) {
@@ -850,9 +1160,13 @@
     }
 
     addEventListener('popstate', () => {
+      const prevMe = state.me, prevOnly = state.mineOnly;
       readURL();
-      if (!state.dayN) state.dayN = defaultDayN();
-      renderWhoBtn(); renderStrip(); renderDay(); renderRooms(); renderDining();
+      renderWhoBtn();
+      if (state.me !== prevMe || state.mineOnly !== prevOnly) {
+        renderStrip(); renderAgenda(); renderRooms(); renderDining(); renderNow();
+      }
+      if (state.jumpTo) jumpDay(state.jumpTo);
     });
   }
 
@@ -866,11 +1180,10 @@
   /* ----------------------------------------------------------------- boot -- */
 
   readURL();
-  if (!state.dayN) state.dayN = defaultDayN();
 
   renderWhoBtn();
   renderStrip();
-  renderDay();
+  renderAgenda();
   renderRooms();
   renderDining();
   renderNotes();
@@ -879,14 +1192,25 @@
   wire();
   observeReveals(document);
   loadCurrentWeather();
+  loadTripWeather();
+  document.body.dataset.theme = DAYS[state.activeDay - 1].theme;
+
+  // A ?day= or #day- link lands you at that day; otherwise you start at the top.
+  if (state.jumpTo) {
+    requestAnimationFrame(() => jumpDay(state.jumpTo));
+  }
+
+  addEventListener('hashchange', () => {
+    const h = /^#day-(\d+)$/.exec(location.hash);
+    if (h) jumpDay(parseInt(h[1], 10));
+  });
 
   setInterval(tick, 1000);
-  // Re-evaluate "today" if the page is left open overnight.
+  // Re-render once a day rolls over if the page is left open overnight.
+  let lastToday = resortToday();
   setInterval(() => {
-    const d = defaultDayN();
-    if (!new URLSearchParams(location.search).get('day') && d !== state.dayN) {
-      state.dayN = d; renderStrip(); renderDay();
-    }
+    const t = resortToday();
+    if (t !== lastToday) { lastToday = t; renderStrip(); renderAgenda(true); }
   }, 60000);
 
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
