@@ -4,6 +4,13 @@ Personal website for Omas Abdullah, served at <https://omasabdullah.github.io/>.
 
 Static HTML, no build step. Pages are deployed from the `master` branch root by GitHub Pages.
 
+## Projects
+
+- `/` — personal page and dated updates (see below).
+- [`/disney/`](disney/) — **Twins Disney Trip 2026**, a live interactive agenda
+  for our Walt Disney World trip. Unlisted (`noindex` + `robots.txt`
+  disallow); see [`disney/README.md`](disney/README.md) for how to edit it.
+
 ## Adding an update
 
 Use the helper script to publish a new dated update. It creates the post page,

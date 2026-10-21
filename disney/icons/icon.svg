@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Twins Disney Trip 2026">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b2a6b"/>
+      <stop offset="0.5" stop-color="#0d1230"/>
+      <stop offset="1" stop-color="#2a0f3a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.18" r="0.75">
+      <stop offset="0" stop-color="#4f7dff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#4f7dff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ears" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#ffd9ef"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <rect width="512" height="512" fill="url(#glow)"/>
+  <g fill="#fff" opacity="0.75">
+    <circle cx="74" cy="92" r="3"/>
+    <circle cx="436" cy="118" r="2.4"/>
+    <circle cx="398" cy="60" r="2"/>
+    <circle cx="112" cy="420" r="2.2"/>
+    <circle cx="430" cy="392" r="3"/>
+  </g>
+  <g fill="url(#ears)">
+    <circle cx="152" cy="168" r="70"/>
+    <circle cx="360" cy="168" r="70"/>
+    <circle cx="256" cy="316" r="118"/>
+  </g>
+</svg>
