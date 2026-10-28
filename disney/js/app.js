@@ -164,7 +164,8 @@
 
   /* --------------------------------------------------------------- state -- */
 
-  const state = { me: null, activeDay: 1, mineOnly: false, open: {}, jumpTo: null };
+  const state = { me: null, activeDay: 1, mineOnly: false, open: {}, jumpTo: null,
+    mapKey: null, mapDay: null, mapAll: false, place: null, mapFull: false };
 
   function readURL() {
     const q = new URLSearchParams(location.search);
@@ -177,6 +178,15 @@
     if (h) d = parseInt(h[1], 10);
     state.jumpTo = d >= 1 && d <= DAYS.length ? d : null;
     state.activeDay = state.jumpTo || defaultDayN();
+
+    // Park map: ?map=mk&place=tron&mday=7 opens that pin, zoomed in.
+    const mk = q.get('map');
+    state.mapKey = mk && PARK_BY_KEY[mk] ? mk : null;
+    const pl = q.get('place');
+    state.place = state.mapKey && PARK_BY_KEY[state.mapKey]._byId[pl] ? pl : null;
+    state.mapAll = q.get('all') === '1';
+    const md = parseInt(q.get('mday'), 10);
+    state.mapDay = state.mapKey && PARK_BY_KEY[state.mapKey].days.includes(md) ? md : null;
   }
 
   /* The URL mirrors where you are so any link is shareable. replaceState
@@ -186,6 +196,10 @@
     if (state.me) q.set('me', state.me);
     if (state.activeDay) q.set('day', String(state.activeDay));
     if (state.mineOnly) q.set('only', '1');
+    if (state.mapKey) q.set('map', state.mapKey);
+    if (state.mapDay) q.set('mday', String(state.mapDay));
+    if (state.mapAll) q.set('all', '1');
+    if (state.place) q.set('place', state.place);
     history.replaceState({}, '', location.pathname + (q.toString() ? '?' + q : ''));
   }
 
@@ -322,6 +336,7 @@
           ${interactive ? `type="button" aria-expanded="${state.open[item._key] ? 'true' : 'false'}" data-exp="${item._key}"` : ''}>
           ${inner}
         </${tag}>
+        ${mapLink(item)}
       </span>
     </li>`;
   }
@@ -398,6 +413,7 @@
             ${llCount ? `<span class="dh-chip">${svg('i-bolt')} ${llCount} Lightning Lane${llCount > 1 ? 's' : ''}</span>` : ''}
             ${mealCount ? `<span class="dh-chip">${svg('i-fork')} ${mealCount} booking${mealCount > 1 ? 's' : ''}</span>` : ''}
             <span class="dh-chip" data-wx="${day.date}" hidden></span>
+            ${mapChip(day)}
             <button class="dh-chip" data-icsday="${day.n}">${svg('i-cal')} Add this day</button>
           </div>
         </div>
@@ -704,7 +720,11 @@
       ${item.note ? `<p class="lc-note">${esc(item.note)}</p>` : ''}
       ${state.me && item._who ? `<p class="lc-note"><strong>${mine ? 'You’re on this one.' : ''}${notme ? 'Not your group — you’re free.' : ''}</strong></p>` : ''}
       ${item._who ? whoRow(item) : ''}
-      <a class="lc-go" href="#${item._key}" data-jumpnow>Show in the agenda ${svg('i-arrowdown')}</a>
+      <span class="lc-acts">
+        <a class="lc-go" href="#${item._key}" data-jumpnow>Show in the agenda ${svg('i-arrowdown')}</a>
+        ${item._place ? `<button class="lc-go" data-openmap="${item._place._park.key}"
+          data-mapplace="${item._place.id}" data-mapopenday="${item._day.n}">Find it on the map ${svg('i-pin')}</button>` : ''}
+      </span>
     </div>`;
   }
 
@@ -813,6 +833,693 @@
     observeReveals($('#noteList'));
   }
 
+  /* ----------------------------------------------------------- park maps -- */
+  /* The images are Disney's own guidemaps, cut out of their PDFs. Everything
+     drawn on top is derived from the agenda: each pin knows which entries
+     happen there, so tapping TRON tells you it's a Single Pass at 6:25 PM and
+     whether you're on it. Pin coordinates live in js/maps.js.              */
+
+  /* Case, curly quotes and punctuation are all flattened, so “it’s a small
+     world” and "it's a small world" are the same string. */
+  const mnorm = (s) => String(s).toLowerCase()
+    .replace(/[\u2018\u2019\u02bc]/g, "'")
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+  const PARK_BY_KEY = {};
+  const PARK_BY_THEME = {};
+  PARK_MAPS.forEach((pk) => {
+    PARK_BY_KEY[pk.key] = pk;
+    PARK_BY_THEME[pk.theme] = pk;
+    pk._byId = {};
+    pk._byName = {};
+    pk.places.forEach((p) => {
+      p._park = pk;
+      p._items = [];
+      pk._byId[p.id] = p;
+      pk._byName[mnorm(p.name)] = p;
+      (p.alias || []).forEach((a) => { pk._byName[mnorm(a)] = p; });
+    });
+  });
+
+  /* Tie every agenda entry to a pin, once. An explicit `place:` in data.js
+     wins; otherwise the title has to match a place name *exactly*. This is
+     deliberately not fuzzy — a near-miss that quietly pins a Lightning Lane
+     to the wrong ride is far worse than a missing pin. */
+  FLAT.forEach((item) => {
+    const pk = PARK_BY_THEME[item._day.theme];
+    if (!pk) return;
+    const p = item.place ? pk._byId[item.place] : pk._byName[mnorm(item.title)];
+    if (!p) return;
+    item._place = p;
+    p._items.push(item);
+  });
+
+  const mapOf = (day) => PARK_BY_THEME[day.theme] || null;
+
+  function pinClass(p) {
+    if (p.kind === 'gate') return 'p-gate';
+    if (!p._items.length) return 'p-extra';
+    if (p._items.some((i) => i.type === 'll')) return 'p-ll';
+    if (p._items.some((i) => i.type === 'meal')) return 'p-meal';
+    return 'p-show';
+  }
+  const PIN_ICON = { 'p-gate': 'i-bus', 'p-meal': 'i-fork', 'p-show': 'i-show',
+    'p-ll': 'i-bolt', 'p-extra': 'i-pin' };
+
+  /* Full ride names are far too long to sit beside a pin on a 390px screen. */
+  function pinLabel(p) {
+    return (p.short || p.name)
+      .replace(/^(Star Wars: |The Many Adventures of |Journey of Water, )/i, '')
+      .replace(/ [-–—] .*$/, '');
+  }
+
+  const MapView = (function () {
+    const FULL_LOADED = {};
+    let pk = null;                 // the park being shown
+    let k = 1, tx = 0, ty = 0;     // canvas scale + translation
+    let bw = 0, bh = 0;            // image size when fitted to the stage, px
+    let sw = 0, sh = 0;            // stage size, px
+    let built = false;
+
+    const stage = () => $('#mapStage');
+    const canvas = () => $('#mapCanvas');
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+    /* Zooming past about one image pixel per CSS pixel only buys blur, so the
+       ceiling comes from the image we actually have rather than a fixed guess.
+       Magic Kingdom's guidemap is half the resolution of EPCOT's. */
+    const maxK = () => clamp(pk ? pk.img.w / Math.max(1, sw) : 3, 2.8, 7);
+
+    function measure() {
+      if (!pk) return;
+      const st = stage();
+      sw = st.clientWidth;
+      if (!sw) return;
+      if (state.mapFull) {
+        st.style.height = '';          // let the flex layout fill the screen
+        sh = st.clientHeight;
+      } else {
+        /* Give the stage the park's own proportions so the art reaches all
+           four edges. Letterbox bands would otherwise eat 180px of a phone
+           screen on the squarer maps. */
+        const cap = Math.min(innerHeight * 0.68, 600);
+        sh = Math.round(clamp(sw * (pk.img.h / pk.img.w), 320, cap));
+        st.style.height = sh + 'px';
+      }
+      if (!sh) return;
+      const s0 = Math.min(sw / pk.img.w, sh / pk.img.h);
+      bw = pk.img.w * s0;
+      bh = pk.img.h * s0;
+      const cv = canvas();
+      cv.style.width = bw + 'px';
+      cv.style.height = bh + 'px';
+    }
+
+    /* How much of the stage the detail card is sitting on. Everything below
+       treats the stage as being this much shorter, so a pin near the bottom
+       edge of the map can still be brought up into view — the map is allowed
+       to slide up behind the card. */
+    function inset() {
+      const c = $('#placeCard');
+      return c.hidden ? 0 : Math.min(c.offsetHeight, sh * 0.6);
+    }
+
+    /* Never let the map be dragged away from the stage: anything smaller than
+       the visible area on an axis stays centred in it. */
+    function clampT() {
+      const w = bw * k, h = bh * k;
+      const vh = sh - inset();
+      tx = w <= sw ? (sw - w) / 2 : clamp(tx, sw - w, 0);
+      ty = h <= vh ? (vh - h) / 2 : clamp(ty, vh - h, 0);
+    }
+
+    function apply(anim) {
+      if (!pk) return;
+      clampT();
+      const cv = canvas();
+      cv.style.transition = (anim && !REDUCED)
+        ? 'transform 460ms cubic-bezier(.16,1,.3,1)' : 'none';
+      cv.style.transform =
+        `translate3d(${tx.toFixed(2)}px,${ty.toFixed(2)}px,0) scale(${k.toFixed(4)})`;
+      /* Pins read --k to cancel the zoom out, so they stay the same size on
+         screen however far in you go. */
+      cv.style.setProperty('--k', k.toFixed(4));
+      cv.dataset.labels = (k >= 1.7 || sw >= 620) ? 'on' : 'off';
+      layoutLabels();
+      /* One finger scrolls the page until you've zoomed in — then it pans the
+         map instead. Two fingers always pinch. */
+      const st = stage();
+      st.style.touchAction = (k > 1.02 || state.mapFull) ? 'none' : 'pan-y';
+      st.style.cursor = (k > 1.02 || state.mapFull) ? '' : 'default';
+      $('#mapOut').disabled = k <= 1.001;
+      $('#mapIn').disabled = k >= maxK() - 0.001;
+      $('#mapFit').disabled = k <= 1.001;
+      const z = $('#mapZoom');
+      z.textContent = `${k.toFixed(1)}\u00d7`;
+      z.classList.toggle('show', k > 1.02);
+    }
+
+    /* Fantasyland puts six attractions inside a thumb's width, so at some zoom
+       levels their labels inevitably pile up. Rather than let them overlap
+       into mush, lay them out greedily: the open pin wins, then the ones we
+       have plans at, then top to bottom. Anything that would collide with a
+       label already placed, or that has drifted off the stage, is dropped.
+       Dots are never hidden — only their names. */
+    let lblRaf = 0;
+    function layoutLabels() {
+      cancelAnimationFrame(lblRaf);
+      lblRaf = requestAnimationFrame(() => {
+        const pins = $$('.pin', $('#mapPins'));
+        if (!pins.length) return;
+        const rank = (p) => (p.classList.contains('is-sel') ? 0 : 1)
+          + (p.classList.contains('p-extra') ? 2 : 0)
+          + (p.classList.contains('is-dim') ? 1 : 0);
+        const order = pins.slice().sort((a, b) => rank(a) - rank(b)
+          || (+a.style.getPropertyValue('--y')) - (+b.style.getPropertyValue('--y')));
+        const lbls = order.map((p) => $('.pin-lbl', p));
+        // Show everything first, so one layout pass serves every measurement.
+        lbls.forEach((l) => { l.style.visibility = ''; });
+        const box = stage().getBoundingClientRect();
+        const rects = lbls.map((l) => l.getBoundingClientRect());
+        const dots = order.map((p) => $('.pin-dot', p).getBoundingClientRect());
+        const gap = 3;
+        const hits = (r, o) => r.left < o.right + gap && r.right > o.left - gap
+          && r.top < o.bottom + gap && r.bottom > o.top - gap;
+        const kept = [];
+        rects.forEach((r, i) => {
+          // Must fit entirely inside the stage: a name sliced off by the edge
+          // reads as a glitch, and half of "Cinderella Castle" is no use.
+          const off = r.left < box.left + 2 || r.right > box.right - 2
+            || r.bottom < box.top || r.top > box.bottom;
+          // A label may never cover another pin's dot — losing the name is
+          // recoverable, losing the marker is not.
+          const clash = kept.some((o) => hits(r, o))
+            || dots.some((d, j) => j !== i && hits(r, d));
+          if (off || clash) lbls[i].style.visibility = 'hidden';
+          else kept.push(r);
+        });
+      });
+    }
+
+    /** Zoom about a point in stage coordinates, so whatever is under the
+        cursor / pinch stays under it. */
+    function zoomAt(nk, px, py, anim) {
+      nk = clamp(nk, 1, maxK());
+      const cx = (px - tx) / k, cy = (py - ty) / k;
+      k = nk;
+      tx = px - cx * k;
+      ty = py - cy * k;
+      apply(anim);
+    }
+    const zoomBy = (f, anim) => zoomAt(k * f, sw / 2, sh / 2, anim);
+
+    /** Centre a normalised map point in the part of the stage you can actually
+        see — which is the space above the detail card when one is open. */
+    function centreOn(nx, ny, nk, anim) {
+      /* Default to a modest zoom, and never pull back out: if you're already
+         further in than this, selecting a pin shouldn't undo that. */
+      k = clamp(nk == null ? Math.max(k, Math.min(maxK(), 2.2)) : nk, 1, maxK());
+      tx = sw / 2 - nx * bw * k;
+      ty = (sh - inset()) / 2 - ny * bh * k;
+      apply(anim !== false);
+    }
+    function fit(anim) { k = 1; apply(anim !== false); }
+
+    /* ------------------------------------------------------------- pins --- */
+
+    const dayItems = (p) => state.mapDay
+      ? p._items.filter((i) => i._day.n === state.mapDay) : p._items;
+
+    function visible() {
+      return pk.places.filter((p) => {
+        if (state.mapAll) return true;
+        // Gates stay put whatever the filter — they're how you orient yourself.
+        if (p.kind === 'gate') return true;
+        const items = dayItems(p);
+        if (!items.length) return false;
+        if (state.mineOnly && state.me) return items.some((i) => !notMine(i));
+        return true;
+      });
+    }
+
+    /* Mirrors the agenda: with a person picked, anything that isn't theirs
+       fades back instead of disappearing, so they still see the shape of
+       the day around them. */
+    const dimmed = (p) => {
+      if (!state.me) return false;
+      const items = dayItems(p);
+      return items.length > 0 && items.every((i) => notMine(i));
+    };
+
+    function renderPins() {
+      if (!pk) return;
+      const list = visible();
+      $('#mapPins').innerHTML = list.map((p) => {
+        const cls = pinClass(p);
+        const items = dayItems(p);
+        const mine = !!state.me && items.some((i) => isMine(i));
+        const t = items.length
+          ? `${p.name} — ${items.map((i) => fmt12s(i.t)).join(', ')}`
+          : `${p.name} — not on our list`;
+        return `<button class="pin ${cls}${dimmed(p) ? ' is-dim' : ''}${mine ? ' is-mine' : ''}${
+          state.place === p.id ? ' is-sel' : ''}${p.x > 0.7 ? ' lbl-l' : ''}"
+          style="--x:${p.x};--y:${p.y}" data-place="${p.id}"
+          aria-label="${esc(t)}" title="${esc(t)}">
+          <span class="pin-dot">${svg(PIN_ICON[cls])}${items.length > 1
+            ? `<span class="pin-n">${items.length}</span>` : ''}</span>
+          <span class="pin-lbl">${esc(pinLabel(p))}</span>
+        </button>`;
+      }).join('');
+      const n = list.length;
+      const c = $('#mapCount');
+      if (c) c.textContent = `${n} ${n === 1 ? 'place' : 'places'}`;
+    }
+
+    /* -------------------------------------------------------- place card -- */
+
+    function placeRow(item) {
+      const d = item._day;
+      const win = item.end ? `${fmt12s(item.t)} – ${fmt12s(item.end)}` : fmt12s(item.t);
+      const mine = isMine(item);
+      return `<a class="pc-row k-${item.type}" href="#${item._key}" data-jumpnow>
+        <span class="pc-when">${svg('i-clock')}<span>Day ${d.n} · ${esc(win)}</span></span>
+        <span class="pc-what">${esc(kindLabel(item))}${mine
+          ? '<span class="mine-flag">You</span>' : ''}</span>
+        ${item.title === (item._place || {}).name ? ''
+          : `<span class="pc-title">${item.title}</span>`}
+        ${item._who ? `<span class="pc-who">${item._who.length === ALL_IDS.length
+          ? `All ${ALL_IDS.length} of us`
+          : item._who.map((id) => avatar(id, 'xs')).join('') }</span>` : ''}
+        <span class="pc-go">${svg('i-chevr')}<span class="vh">Show in the plan</span></span>
+      </a>`;
+    }
+
+    function renderCard() {
+      const card = $('#placeCard');
+      const p = state.place && pk ? pk._byId[state.place] : null;
+      if (!p) {
+        card.hidden = true;
+        card.innerHTML = '';
+        stage().classList.remove('has-card');
+        return;
+      }
+      const items = dayItems(p);
+      card.innerHTML = `
+        <button class="pc-x" data-closeplace aria-label="Close">${svg('i-close')}</button>
+        <p class="pc-land">${svg(PIN_ICON[pinClass(p)])}<span>${esc(p.land)}</span></p>
+        <h3 class="pc-name">${esc(p.name)}</h3>
+        ${p.note ? `<p class="pc-note">${esc(p.note)}</p>` : ''}
+        ${items.length
+          ? `<div class="pc-rows">${items.map(placeRow).join('')}</div>`
+          : `<p class="pc-none">Not on our plan — just somewhere worth knowing
+              about if you have time to spare.</p>`}`;
+      card.hidden = false;
+      // The card is already shouting the name; the pin's own label would only
+      // collide with the controls.
+      stage().classList.add('has-card');
+    }
+
+    function select(id, opts) {
+      const o = opts || {};
+      const p = pk && id ? pk._byId[id] : null;
+      state.place = p ? p.id : null;
+      $$('.pin', $('#mapPins')).forEach((el) => {
+        el.classList.toggle('is-sel', el.dataset.place === state.place);
+      });
+      /* A pin that's been filtered out still needs to show when it's deep
+         linked, so bring it back by widening the filter. */
+      if (p && !visible().includes(p)) {
+        state.mapAll = true;
+        renderFilters();
+        renderPins();
+        $$('.pin', $('#mapPins')).forEach((el) => {
+          el.classList.toggle('is-sel', el.dataset.place === state.place);
+        });
+      }
+      renderCard();
+      if (p && o.fly !== false) centreOn(p.x, p.y, o.k, o.anim);
+      // Card dismissed: re-settle into the space it was covering.
+      else if (!p) apply(true);
+      if (o.url !== false) writeURL();
+    }
+
+    /* ----------------------------------------------------- chrome + load -- */
+
+    function renderPicker() {
+      $('#parkPicker').innerHTML = PARK_MAPS.map((m) => {
+        const on = pk && m.key === pk.key;
+        return `<button class="ptab" data-theme="${m.theme}" data-park="${m.key}"
+          role="tab" aria-selected="${on}" tabindex="${on ? 0 : -1}">
+          <span class="pt-day">${m.days.length > 1
+            ? `Days ${m.days.join(' & ')}` : `Day ${m.days[0]}`}</span>
+          <span class="pt-name">${esc(m.name)}</span>
+        </button>`;
+      }).join('');
+    }
+
+    function renderFilters() {
+      const days = pk.days.length > 1 ? `
+        <span class="seg" role="group" aria-label="Which day">
+          <button data-mapday="0" aria-pressed="${!state.mapDay}">Both days</button>
+          ${pk.days.map((n) => `<button data-mapday="${n}"
+            aria-pressed="${state.mapDay === n}">Day ${n}</button>`).join('')}
+        </span>` : '';
+      $('#mapFilters').innerHTML = `
+        <span class="seg" role="group" aria-label="What to show">
+          <button data-mapall="0" aria-pressed="${!state.mapAll}">Our plans</button>
+          <button data-mapall="1" aria-pressed="${!!state.mapAll}">Everything</button>
+        </span>
+        ${days}
+        <span class="mapcount" id="mapCount"></span>`;
+    }
+
+    /* The small image is in the service worker's cache, so it paints instantly
+       even offline. The full one is fetched behind it and swapped in when it
+       lands — you can start reading the map before the detail arrives. */
+    function loadImage() {
+      const img = $('#mapImg');
+      const want = pk.key;
+      img.alt = `${pk.full} guidemap`;
+      img.src = FULL_LOADED[want] ? pk.img.full : pk.img.sm;
+      if (FULL_LOADED[want]) return;
+      const hi = new Image();
+      hi.decoding = 'async';
+      hi.onload = () => {
+        FULL_LOADED[want] = true;
+        if (pk && pk.key === want) img.src = pk.img.full;
+      };
+      hi.src = pk.img.full;
+    }
+
+    function show(key, opts) {
+      const o = opts || {};
+      const next = PARK_BY_KEY[key] || PARK_MAPS[0];
+      const swapped = !pk || pk.key !== next.key;
+      pk = next;
+      state.mapKey = pk.key;
+      if (swapped) {
+        state.place = null;
+        if (state.mapDay && !pk.days.includes(state.mapDay)) state.mapDay = null;
+        loadImage();
+        $('#mapWrap').dataset.theme = pk.theme;
+        $('#mapCredit').textContent = pk.credit;
+        renderPicker();
+        renderFilters();
+        measure();
+        fit(false);
+        renderPins();
+        renderCard();
+      }
+      if (o.day !== undefined) {
+        state.mapDay = pk.days.includes(o.day) ? o.day : null;
+        renderFilters();
+        renderPins();
+      }
+      if (o.url !== false) writeURL();
+    }
+
+    /* ------------------------------------------------------- full screen -- */
+
+    let scrollKeep = 0;
+    function setFull(on) {
+      if (!pk || state.mapFull === on) return;
+      if (on) scrollKeep = scrollY;
+      state.mapFull = on;
+      $('#mapWrap').classList.toggle('is-full', on);
+      document.documentElement.classList.toggle('map-full', on);
+      const b = $('#mapFull');
+      b.setAttribute('aria-pressed', String(on));
+      b.setAttribute('aria-label', on ? 'Leave full screen' : 'Open the map full screen');
+      b.innerHTML = svg(on ? 'i-close' : 'i-full');
+      if (!on) scrollTo(0, scrollKeep);
+      /* The stage has just changed shape — refit around whatever was in the
+         middle of it so you don't lose your place. */
+      const cx = (sw / 2 - tx) / (bw * k), cy = (sh / 2 - ty) / (bh * k);
+      requestAnimationFrame(() => {
+        measure();
+        if (k > 1.02) centreOn(cx, cy, k, false); else fit(false);
+      });
+    }
+
+    /* ---------------------------------------------------------- gestures -- */
+
+    function bind() {
+      const st = stage();
+      const pts = new Map();
+      let g = null;
+      let lastTap = 0;
+      let dragged = false;
+
+      /* Phrased for whatever is pointing at it — a trackpad needs ⌘-scroll
+         where a thumb just pinches. It stays put rather than fading out: it's
+         one muted line below the map, and sixteen people will each meet this
+         map for the first time. */
+      $('#mapHint').textContent = matchMedia('(hover: hover)').matches
+        ? 'Drag to move, double-click or \u2318/Ctrl-scroll to zoom.'
+        : 'Pinch to zoom, drag to move, tap a pin for the details.';
+      addEventListener('transitionend', (e) => {
+        if (e.target === canvas() && e.propertyName === 'transform') layoutLabels();
+      });
+
+      const local = (e) => {
+        const r = st.getBoundingClientRect();
+        return { x: e.clientX - r.left, y: e.clientY - r.top };
+      };
+      const two = () => {
+        const [a, b] = Array.from(pts.values());
+        const r = st.getBoundingClientRect();
+        return {
+          d: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+          x: (a.x + b.x) / 2 - r.left,
+          y: (a.y + b.y) / 2 - r.top,
+        };
+      };
+      function startPinch() {
+        const m = two();
+        g = { mode: 'pinch', d: m.d, k, cx: (m.x - tx) / k, cy: (m.y - ty) / k };
+      }
+      function startPan(e) {
+        g = { mode: 'pan', x: e.clientX, y: e.clientY, tx, ty, moved: 0 };
+      }
+
+      st.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pts.size === 2) { startPinch(); return; }
+        if (pts.size > 2) return;
+        // At fit size a one-finger drag belongs to the page, not the map.
+        if (e.pointerType === 'touch' && k <= 1.02 && !state.mapFull) return;
+        startPan(e);
+        st.classList.add('is-grab');
+      });
+
+      /* Deliberately on the window rather than setPointerCapture: capturing
+         retargets the mouse events, which would send a pin's click to the
+         stage instead of the pin. Window listeners also mean a drag that
+         leaves the stage keeps working. */
+      addEventListener('pointermove', (e) => {
+        if (!pts.has(e.pointerId)) return;
+        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (!g) return;
+        if (g.mode === 'pinch' && pts.size >= 2) {
+          const m = two();
+          k = clamp(g.k * (m.d / g.d), 1, maxK());
+          tx = m.x - g.cx * k;
+          ty = m.y - g.cy * k;
+          apply(false);
+        } else if (g.mode === 'pan') {
+          const dx = e.clientX - g.x, dy = e.clientY - g.y;
+          g.moved = Math.max(g.moved, Math.abs(dx) + Math.abs(dy));
+          tx = g.tx + dx;
+          ty = g.ty + dy;
+          apply(false);
+        }
+      });
+
+      function release(e) {
+        if (!pts.has(e.pointerId)) return;
+        const had = g;
+        pts.delete(e.pointerId);
+        if (pts.size === 1 && had && had.mode === 'pinch') {
+          // Lifting one finger mid-pinch turns it back into a pan.
+          const only = Array.from(pts.values())[0];
+          startPan({ clientX: only.x, clientY: only.y });
+          return;
+        }
+        if (pts.size === 0) {
+          g = null;
+          st.classList.remove('is-grab');
+          const onPin = e.target instanceof Element && !!e.target.closest('.pin');
+          if (had && had.mode === 'pan' && had.moved >= 7) dragged = true;
+          // A tap on bare map closes the detail card; two taps zoom in.
+          if (had && had.mode === 'pan' && had.moved < 7 && !onPin) {
+            const now = Date.now();
+            if (e.pointerType !== 'mouse' && now - lastTap < 320) {
+              const l = local(e);
+              zoomAt(k >= maxK() - 0.01 ? 1 : k * 2, l.x, l.y, true);
+              lastTap = 0;
+            } else {
+              lastTap = now;
+              if (state.place) select(null);
+            }
+          }
+        }
+      }
+      addEventListener('pointerup', release);
+      addEventListener('pointercancel', release);
+
+      /* A drag that happens to finish over a pin must not also open it. */
+      st.addEventListener('click', (e) => {
+        if (!dragged) return;
+        dragged = false;
+        e.preventDefault();
+        e.stopPropagation();
+      }, true);
+
+      /* Plain scrolling over the map keeps scrolling the page — until you've
+         zoomed in, which is a clear sign you want the map. A trackpad pinch
+         arrives as a ctrl-wheel and always zooms. */
+      st.addEventListener('wheel', (e) => {
+        const own = e.ctrlKey || e.metaKey || k > 1.02;
+        if (!own) return;
+        e.preventDefault();
+        const l = local(e);
+        zoomAt(k * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0022)), l.x, l.y, false);
+      }, { passive: false });
+
+      st.addEventListener('dblclick', (e) => {
+        if (e.target.closest('.pin')) return;
+        const l = local(e);
+        zoomAt(k >= maxK() - 0.01 ? 1 : k * 2, l.x, l.y, true);
+      });
+
+      st.addEventListener('keydown', (e) => {
+        const step = 60;
+        const hit = {
+          ArrowLeft: () => { tx += step; apply(false); },
+          ArrowRight: () => { tx -= step; apply(false); },
+          ArrowUp: () => { ty += step; apply(false); },
+          ArrowDown: () => { ty -= step; apply(false); },
+          '+': () => zoomBy(1.4, true), '=': () => zoomBy(1.4, true),
+          '-': () => zoomBy(1 / 1.4, true), '_': () => zoomBy(1 / 1.4, true),
+          0: () => fit(true),
+        }[e.key];
+        if (hit) { e.preventDefault(); hit(); }
+      });
+
+      // Dragging the image itself would otherwise start a native image drag.
+      st.addEventListener('dragstart', (e) => e.preventDefault());
+
+      /* Rotating the phone changes the stage's shape. Hold on to whatever you
+         were looking at: the open pin if there is one, otherwise the point in
+         the middle of the view. */
+      let rz = 0;
+      addEventListener('resize', () => {
+        if (!pk) return;
+        cancelAnimationFrame(rz);
+        /* The old view centre has to be read now, before the stage changes
+           shape. The selection is read in the callback instead: browsers fire
+           a spurious resize during load, and capturing the selection here
+           would let that stale "nothing selected" overwrite a deep-linked pin
+           in the very same frame. */
+        const cx = (sw / 2 - tx) / (bw * k), cy = (sh / 2 - ty) / (bh * k);
+        const k0 = k;
+        rz = requestAnimationFrame(() => {
+          measure();
+          const sel = state.place ? pk._byId[state.place] : null;
+          if (sel) centreOn(sel.x, sel.y, k, false);
+          else if (k0 > 1.02) centreOn(cx, cy, k0, false);
+          else fit(false);
+        });
+      });
+
+      addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        if (state.place) { select(null); return; }
+        if (state.mapFull) setFull(false);
+      });
+    }
+
+    /* -------------------------------------------------------------- api -- */
+
+    return {
+      /** First paint. The stage has a CSS height, so the geometry is known
+          before the image arrives and nothing jumps when it lands. */
+      init() {
+        if (built) return;
+        built = true;
+        // show() resets the selection when it swaps park, so hold on to the
+        // deep-linked pin across it.
+        const want = state.place;
+        const day = state.mapDay;
+        const start = PARK_BY_KEY[state.mapKey] || mapOf(DAYS[state.activeDay - 1])
+          || PARK_MAPS[0];
+        show(start.key, { url: false });
+        if (day) { state.mapDay = day; renderFilters(); renderPins(); }
+        bind();
+        if (want) {
+          requestAnimationFrame(() => select(want, { url: false, anim: false }));
+        }
+      },
+      show,
+      select,
+      setFull,
+      toggleFull: () => setFull(!state.mapFull),
+      zoomBy,
+      fit,
+      refit: () => { measure(); apply(false); },
+      /** Called when the person filter changes — pins restyle in place. */
+      repaint() {
+        if (!pk) return;
+        renderFilters();
+        renderPins();
+        renderCard();
+      },
+      setDay(n) {
+        state.mapDay = n && pk.days.includes(n) ? n : null;
+        state.place = null;
+        renderFilters();
+        renderPins();
+        renderCard();
+        writeURL();
+      },
+      setAll(on) {
+        state.mapAll = !!on;
+        renderFilters();
+        renderPins();
+        writeURL();
+      },
+      /** Jump to the map from anywhere else on the page. */
+      open(key, opts) {
+        const o = opts || {};
+        show(key, { day: o.day, url: false });
+        measure();
+        if (o.place) select(o.place, { k: o.k, anim: !REDUCED });
+        else { fit(false); writeURL(); }
+        // Skip the heading, but keep the park tabs in shot: arriving on a map
+        // with no idea which park it is, or how to change it, is disorienting.
+        jumpTo('#parkPicker');
+      },
+      park: () => pk,
+    };
+  }());
+
+  /** The chip under a park day's heading, and the link under a single card. */
+  function mapChip(day) {
+    const m = mapOf(day);
+    if (!m) return '';
+    return `<button class="dh-chip" data-openmap="${m.key}" data-mapopenday="${day.n}">${
+      svg('i-map')} Park map</button>`;
+  }
+  function mapLink(item) {
+    if (!item._place) return '';
+    const p = item._place;
+    return `<button class="maplink" data-openmap="${p._park.key}"
+      data-mapplace="${p.id}" data-mapopenday="${item._day.n}">${svg('i-pin')
+      }<span>${esc(p.land)}</span><span class="ml-go">on the map</span></button>`;
+  }
+
   /* ---------------------------------------------------------- who dialog -- */
 
   function renderPeopleGrid() {
@@ -848,6 +1555,7 @@
     renderAgenda(true);
     renderRooms();
     renderDining();
+    MapView.repaint();
     renderNow();
   }
 
@@ -1036,6 +1744,7 @@
       const jn = e.target.closest('[data-jumpnow]');
       if (jn) {
         e.preventDefault();
+        MapView.setFull(false);
         const id = (jn.getAttribute('href') || '').slice(1);
         const el = document.getElementById(id);
         if (el) {
@@ -1071,8 +1780,32 @@
         state.mineOnly = only.dataset.only === '1';
         writeURL();
         renderAgenda(true);
+        MapView.repaint();
         return;
       }
+      // park maps ---------------------------------------------------------
+      const om = e.target.closest('[data-openmap]');
+      if (om) {
+        e.preventDefault();
+        MapView.open(om.dataset.openmap, {
+          place: om.dataset.mapplace || null,
+          day: om.dataset.mapopenday ? parseInt(om.dataset.mapopenday, 10) : undefined,
+        });
+        return;
+      }
+      const tab = e.target.closest('[data-park]');
+      if (tab) { MapView.show(tab.dataset.park); return; }
+      const mday = e.target.closest('[data-mapday]');
+      if (mday) { MapView.setDay(parseInt(mday.dataset.mapday, 10)); return; }
+      const mall = e.target.closest('[data-mapall]');
+      if (mall) { MapView.setAll(mall.dataset.mapall === '1'); return; }
+      const pinb = e.target.closest('[data-place]');
+      if (pinb) { MapView.select(pinb.dataset.place); return; }
+      if (e.target.closest('[data-closeplace]')) { MapView.select(null); return; }
+      if (e.target.closest('#mapIn')) { MapView.zoomBy(1.6, true); return; }
+      if (e.target.closest('#mapOut')) { MapView.zoomBy(1 / 1.6, true); return; }
+      if (e.target.closest('#mapFit')) { MapView.fit(true); return; }
+      if (e.target.closest('#mapFull')) { MapView.toggleFull(); return; }
       const exp = e.target.closest('[data-exp]');
       if (exp) {
         const k = exp.dataset.exp;
@@ -1187,6 +1920,7 @@
   renderRooms();
   renderDining();
   renderNotes();
+  MapView.init();
   renderNow();
   renderHeroLive();
   wire();

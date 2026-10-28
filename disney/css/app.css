@@ -100,6 +100,14 @@
 }
 
 /* Per-day accent themes */
+/* Re-deriving the mixed tokens here is not redundant. A custom property that
+   references another is substituted once, on the element it's declared on —
+   so left only on :root, --accent-ink and --accent-soft would stay Magic
+   Kingdom blue inside every themed section no matter what --accent said. */
+[data-theme] {
+  --accent-soft: color-mix(in oklab, var(--accent) 12%, transparent);
+  --accent-ink: color-mix(in oklab, var(--accent) 78%, var(--ink));
+}
 [data-theme="animal"]  { --accent: var(--c-animal); }
 [data-theme="magic"]   { --accent: var(--c-magic); }
 [data-theme="studios"] { --accent: var(--c-studios); }
@@ -1147,6 +1155,381 @@ footer.foot p + p { margin-top: 0.35rem; }
 }
 .totop.show { opacity: 1; transform: none; pointer-events: auto; }
 
+/* ------------------------------------------------------------ park maps -- */
+/* The map is Disney's own guidemap art with our plan pinned on top. The whole
+   thing is one scaled canvas: the image and the pins share a transform, and
+   each pin cancels the zoom out again (scale(1 / --k)) so it stays the same
+   size on screen however far in you go. Nothing is re-laid-out while panning —
+   only `transform` changes, which keeps it on the compositor. */
+
+/* Two-up on a phone, four-up once there's room. Four 88px columns forces
+   "Hollywood Studios" into three cramped lines. */
+.mapband .parkpicker {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.4rem;
+  margin-top: 1.1rem;
+}
+@media (min-width: 560px) {
+  .mapband .parkpicker { grid-template-columns: repeat(4, 1fr); }
+}
+.ptab {
+  display: flex; flex-direction: column; gap: 0.1rem;
+  padding: 0.55rem 0.4rem 0.6rem;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--hairline);
+  background: var(--surface-solid);
+  text-align: center;
+  transition: border-color var(--t-fast), background var(--t-fast),
+              transform var(--t-fast) var(--ease-spring);
+}
+.ptab:active { transform: scale(0.97); }
+.ptab .pt-day {
+  font-size: 0.5625rem; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.ptab .pt-name {
+  font-size: var(--fs-xs); font-weight: 650; letter-spacing: -0.01em;
+  line-height: 1.15;
+  color: var(--ink-2);
+}
+.ptab[aria-selected="true"] {
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 10%, var(--surface-solid));
+}
+.ptab[aria-selected="true"] .pt-name { color: var(--accent-ink); }
+.ptab[aria-selected="true"] .pt-day { color: color-mix(in oklab, var(--accent) 60%, var(--ink-3)); }
+@media (min-width: 560px) {
+  .ptab { padding: 0.6rem 0.75rem 0.65rem; }
+}
+.ptab .pt-name { font-size: var(--fs-sm); }
+
+.mapwrap-outer { margin-top: 0.75rem; }
+.mapwrap {
+  border-radius: var(--r-lg);
+  border: 1px solid var(--hairline);
+  background: var(--surface-solid);
+  overflow: hidden;
+  box-shadow: var(--shadow-1);
+}
+
+/* The stage is a fixed box and the map is fitted inside it, so the geometry is
+   known before the image loads — no layout shift when it lands. */
+.mapstage {
+  position: relative;
+  /* A starting height only. measure() replaces it with one that matches the
+     park's own aspect ratio, so the art fills the box instead of sitting in
+     letterbox bands — Magic Kingdom is square, EPCOT is tall. */
+  height: clamp(340px, 60svh, 560px);
+  overflow: hidden;
+  background:
+    radial-gradient(120% 90% at 50% 0%, color-mix(in oklab, var(--accent) 9%, transparent), transparent 70%),
+    color-mix(in oklab, var(--ink) 4%, var(--paper-2));
+  touch-action: pan-y;
+  cursor: grab;
+  outline: none;
+}
+.mapstage:focus-visible { box-shadow: inset 0 0 0 3px var(--accent); }
+.mapstage.is-grab { cursor: grabbing; }
+
+.mapcanvas {
+  position: absolute; top: 0; left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.mapimg {
+  display: block; width: 100%; height: 100%;
+  user-select: none; -webkit-user-drag: none;
+}
+.pins { position: absolute; inset: 0; }
+
+/* ---- pins ---- */
+
+/* A pin is a zero-size anchor sitting exactly on its coordinate, with the dot
+   and label hung off it absolutely. Sizing it to its contents instead would
+   mean the label's width shifted the dot off the thing it points at. */
+.pin {
+  --pc: var(--accent);
+  --ds: 26px;
+  position: absolute;
+  left: calc(var(--x) * 100%);
+  top: calc(var(--y) * 100%);
+  width: 0; height: 0;
+  /* Cancel the canvas zoom, about the coordinate, so the pin stays the same
+     size on screen however far in you go. */
+  transform: scale(calc(1 / var(--k, 1)));
+  white-space: nowrap;
+  transition: opacity var(--t-fast);
+}
+.pin.p-ll    { --pc: var(--c-ll); }
+.pin.p-meal  { --pc: var(--c-meal); }
+.pin.p-show  { --pc: #e08a1e; }
+.pin.p-gate  { --pc: var(--ink-2); }
+.pin.p-extra { --pc: var(--ink-3); }
+
+.pin-dot {
+  position: absolute;
+  left: calc(var(--ds) / -2); top: calc(var(--ds) / -2);
+  display: grid; place-items: center;
+  width: var(--ds); height: var(--ds);
+  border-radius: 50%;
+  background: var(--pc);
+  color: #fff;
+  box-shadow: 0 0 0 2.5px #fff, 0 2px 7px rgba(10, 12, 18, 0.45);
+  transition: transform var(--t-fast) var(--ease-spring);
+}
+.pin-dot svg { width: 14px; height: 14px; }
+.pin.p-extra { --ds: 20px; }
+.pin.p-extra .pin-dot { box-shadow: 0 0 0 2px #fff, 0 1px 4px rgba(10, 12, 18, 0.35); }
+.pin.p-extra .pin-dot svg { width: 11px; height: 11px; }
+
+/* How many agenda entries happen here — Magic Kingdom's gate has two. */
+.pin-n {
+  position: absolute; top: -5px; right: -6px;
+  min-width: 15px; height: 15px; padding: 0 3px;
+  border-radius: 999px;
+  background: var(--ink); color: var(--paper-2);
+  box-shadow: 0 0 0 2px #fff;
+  font-family: var(--font-num);
+  font-size: 0.5rem; font-weight: 800; line-height: 15px;
+  text-align: center;
+}
+
+.pin-lbl {
+  position: absolute;
+  top: 0; left: calc(var(--ds) / 2 + 4px);
+  transform: translateY(-50%);
+  max-width: 10ch;
+  overflow: hidden; text-overflow: ellipsis;
+  padding: 0.14rem 0.4rem;
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.93);
+  color: #14161b;
+  box-shadow: 0 1px 4px rgba(10, 12, 18, 0.28);
+  font-size: 0.625rem; font-weight: 700; letter-spacing: -0.01em;
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+/* Near the right-hand edge of the map the label would run off into nothing,
+   so it swaps to the other side of the dot. */
+.pin.lbl-l .pin-lbl {
+  left: auto; right: calc(var(--ds) / 2 + 4px);
+}
+/* Labels only once there's room — 15 of them at fit size on a phone is soup. */
+.mapcanvas[data-labels="on"] .pin-lbl { opacity: 1; max-width: 14ch; }
+@media (min-width: 620px) {
+  .mapcanvas[data-labels="on"] .pin-lbl { max-width: 19ch; }
+}
+.pin.p-extra .pin-lbl { background: rgba(255, 255, 255, 0.8); font-weight: 600; }
+.mapstage.has-card .pin.is-sel .pin-lbl { opacity: 0; }
+
+.pin.is-dim { opacity: 0.4; }
+.pin.is-mine .pin-dot { box-shadow: 0 0 0 2.5px #fff, 0 0 0 5px var(--accent), 0 2px 7px rgba(10, 12, 18, 0.4); }
+.pin:active .pin-dot { transform: scale(0.9); }
+.pin.is-sel { z-index: 3; opacity: 1; }
+.pin.is-sel .pin-dot { transform: scale(1.18); }
+.pin.is-sel .pin-lbl { opacity: 1; max-width: 18ch; }
+.pin.is-sel::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--ds) / -2); top: calc(var(--ds) / -2);
+  width: var(--ds); height: var(--ds);
+  border-radius: 50%;
+  border: 2px solid var(--pc);
+  animation: pinping 1.8s var(--ease-out) infinite;
+}
+@keyframes pinping {
+  from { transform: scale(1); opacity: 0.8; }
+  to   { transform: scale(2.6); opacity: 0; }
+}
+
+/* ---- controls ---- */
+
+.mapctl {
+  position: absolute; top: 0.6rem; right: 0.6rem;
+  display: flex; flex-direction: column; gap: 0.3rem;
+  z-index: 4;
+}
+/* Near-solid, not glass: these sit on top of busy illustration, and a
+   translucent chip picks up whatever is behind it — a button that turns tan
+   over a path and green over a lawn reads as broken. */
+.mbtn {
+  display: grid; place-items: center;
+  width: 38px; height: 38px;
+  border-radius: 11px;
+  background: color-mix(in oklab, var(--surface-solid) 92%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--hairline-2);
+  box-shadow: var(--shadow-1);
+  color: var(--ink);
+  transition: transform var(--t-fast) var(--ease-spring), color var(--t-fast);
+}
+.mbtn:active { transform: scale(0.92); }
+.mbtn:disabled { color: var(--ink-3); opacity: 0.55; }
+
+.mapzoom {
+  position: absolute; left: 0.7rem; top: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--hairline-2);
+  font-family: var(--font-num);
+  font-size: var(--fs-xs); font-weight: 700;
+  color: var(--ink-2);
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+.mapzoom.show { opacity: 1; }
+
+/* Sits in the strip under the stage, never over the artwork, and retires the
+   moment you've worked the map out for yourself. */
+.maphint {
+  flex: 1 1 100%;
+  font-size: 0.625rem; color: var(--ink-3);
+}
+
+/* ---- the detail card ---- */
+
+.placecard {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  z-index: 6;
+  /* Never more than half the stage: the point of a bottom sheet is that you
+     can still see the map it's describing. select() flies the pin into the
+     space left above it. */
+  max-height: 60%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Fades the last row when there's more to scroll to. */
+  mask-image: linear-gradient(#000 calc(100% - 18px), transparent);
+  padding: 0.7rem 1rem 0.85rem;
+  border-radius: var(--r) var(--r) 0 0;
+  background: var(--glass);
+  backdrop-filter: blur(24px) saturate(180%);
+  border-top: 1px solid var(--hairline-2);
+  box-shadow: 0 -14px 40px -20px rgba(12, 14, 20, 0.5);
+  animation: pcup var(--t) var(--ease-out);
+}
+@keyframes pcup { from { transform: translateY(100%); } to { transform: none; } }
+.placecard[hidden] { display: none; }
+
+.pc-x {
+  position: absolute; top: 0.5rem; right: 0.5rem;
+  display: grid; place-items: center;
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--ink) 8%, transparent);
+  color: var(--ink-2);
+}
+.pc-x svg { width: 14px; height: 14px; }
+
+.pc-land {
+  display: flex; align-items: center; gap: 0.3rem;
+  font-size: 0.5625rem; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+}
+.pc-land svg { width: 12px; height: 12px; }
+.pc-name {
+  margin-top: 0.1rem; padding-right: 2rem;
+  font-size: var(--fs-h3); font-weight: 700; letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+.pc-note { margin-top: 0.3rem; font-size: var(--fs-sm); line-height: 1.4; color: var(--ink-2); }
+.pc-none { margin-top: 0.5rem; font-size: var(--fs-xs); color: var(--ink-3); }
+
+.pc-rows { display: grid; gap: 0.4rem; margin-top: 0.7rem; }
+.pc-row {
+  --kind: var(--accent);
+  position: relative;
+  display: grid; gap: 0.1rem;
+  padding: 0.5rem 1.4rem 0.5rem 0.7rem;
+  border-radius: var(--r-sm);
+  background: var(--surface-solid);
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--kind);
+  transition: transform var(--t-fast) var(--ease-spring);
+}
+.pc-row:active { transform: scale(0.985); }
+.pc-row.k-ll { --kind: var(--c-ll); }
+.pc-row.k-meal { --kind: var(--c-meal); }
+.pc-row.k-show { --kind: #e08a1e; }
+.pc-when {
+  display: flex; align-items: center; gap: 0.3rem;
+  font-family: var(--font-num);
+  font-size: var(--fs-sm); font-weight: 680; letter-spacing: -0.01em;
+}
+.pc-when svg { width: 13px; height: 13px; color: var(--ink-3); }
+.pc-what {
+  display: flex; align-items: center; gap: 0.4rem;
+  font-size: var(--fs-xs); font-weight: 600; color: var(--kind);
+}
+.pc-what .mine-flag { display: inline-flex; margin-left: 0; }
+.pc-title { font-size: var(--fs-xs); color: var(--ink-2); }
+.pc-who { display: flex; align-items: center; gap: 0.15rem; margin-top: 0.15rem;
+  font-size: var(--fs-xs); color: var(--ink-3); }
+/* The chevron replaces a "go to the plan" line of its own — two rows have to
+   fit in a sheet that's only 60% of a phone-sized stage. */
+.pc-go {
+  position: absolute; top: 50%; right: 0.45rem;
+  transform: translateY(-50%);
+  color: var(--ink-3);
+  font-size: 0; /* label is for assistive tech only */
+}
+.pc-go svg { width: 15px; height: 15px; }
+
+/* ---- tools strip under the stage ---- */
+
+.maptools {
+  display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+  padding: 0.7rem 0.8rem 0.8rem;
+  border-top: 1px solid var(--hairline);
+}
+.mapfilters { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; flex: 1 1 100%; }
+.mapcount { font-size: var(--fs-xs); color: var(--ink-3); }
+.mapcredit {
+  flex: 1 1 100%;
+  font-size: 0.625rem; color: var(--ink-3);
+}
+
+/* ---- full screen ---- */
+/* A plain fixed overlay rather than the Fullscreen API: iOS Safari doesn't
+   support it on elements, and this behaves identically everywhere. */
+
+html.map-full, html.map-full body { overflow: hidden; }
+.mapwrap.is-full {
+  position: fixed; inset: 0; z-index: 90;
+  border: 0; border-radius: 0;
+  display: flex; flex-direction: column;
+  background: var(--paper);
+  padding-top: env(safe-area-inset-top);
+}
+.mapwrap.is-full .mapstage { flex: 1; height: auto; touch-action: none; }
+.mapwrap.is-full .maptools { padding-bottom: calc(0.8rem + env(safe-area-inset-bottom)); }
+
+/* ---- the link from a timeline card to its pin ---- */
+
+.maplink {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  margin-top: 0.4rem; padding: 0.22rem 0.6rem 0.22rem 0.5rem;
+  border-radius: 999px;
+  border: 1px dashed color-mix(in oklab, var(--kind, var(--accent)) 40%, var(--hairline-2));
+  background: transparent;
+  font-size: 0.625rem; font-weight: 620;
+  color: var(--ink-3);
+  transition: transform var(--t-fast) var(--ease-spring), color var(--t-fast),
+              border-color var(--t-fast);
+}
+.maplink svg { width: 11px; height: 11px; color: var(--kind, var(--accent)); }
+.maplink .ml-go { color: var(--ink-3); opacity: 0.8; }
+.maplink:active { transform: scale(0.96); }
+@media (hover: hover) {
+  .maplink:hover { color: var(--ink); border-color: var(--kind, var(--accent)); }
+}
+
+.lc-acts { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+
 /* -------------------------------------------------------------- reveal --- */
 
 .reveal {
@@ -1192,6 +1575,15 @@ footer.foot .footlinks a,
 .dh-chip, .seg button, .who-btn { min-height: 42px; }
 .daypill, .db-pill { min-height: 44px; }
 .scrollcue { padding: 0.5rem 1.25rem; }
+.ptab, .pc-row { min-height: 44px; }
+.maplink { min-height: 30px; padding-block: 0.3rem; }
+/* A pin can't grow without covering the map, so the hit area is pushed out
+   past the artwork with a pseudo-element instead. */
+.pin-dot::after {
+  content: '';
+  position: absolute; inset: -9px;
+  border-radius: 50%;
+}
 
 /* ------------------------------------------------- dark-mode contrast -- */
 /* Dark accents are deliberately bright, so flip to dark text on the filled
@@ -1211,6 +1603,12 @@ footer.foot .footlinks a,
       linear-gradient(135deg, color-mix(in oklab, var(--accent) 34%, #05060b), color-mix(in oklab, var(--accent) 12%, #05060b));
   }
   .dayhead::after { background: rgba(255, 255, 255, 0.07); }
+
+  /* The guidemap art is light in both schemes, so the pin labels that sit on
+     top of it keep their light treatment rather than following the theme. */
+  .pin-lbl { background: rgba(252, 252, 253, 0.94); color: #14161b; }
+  .pin-dot { box-shadow: 0 0 0 2.5px rgba(255, 255, 255, 0.92), 0 2px 8px rgba(0, 0, 0, 0.5); }
+  .pin-n { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92); }
 }
 
 /* --------------------------------------------------------- span layout -- */

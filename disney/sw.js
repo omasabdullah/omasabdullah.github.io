@@ -12,18 +12,27 @@
  * Bump CACHE on every deploy.
  */
 
-const CACHE = 'disney-2026-v2';
+const CACHE = 'disney-2026-v3';
 const TIMEOUT = 2500; // park wifi that half-answers is worse than no wifi
 
+/* Only the small guidemaps are pre-cached: four of them cost about 510 KB,
+   which is worth paying up front so the maps work in a dead spot in Pandora.
+   The full-size ones are 1.9 MB together, so they're left to the runtime
+   cache below — whichever parks you actually open get kept. */
 const SHELL = [
   './',
   'index.html',
   'css/app.css',
   'js/data.js',
+  'js/maps.js',
   'js/app.js',
   'manifest.webmanifest',
   'icons/icon.svg',
   'icons/apple-touch-icon.png',
+  'maps/ak-sm.webp',
+  'maps/mk-sm.webp',
+  'maps/hs-sm.webp',
+  'maps/ep-sm.webp',
 ];
 
 self.addEventListener('install', (e) => {
@@ -52,6 +61,21 @@ self.addEventListener('fetch', (e) => {
   // Weather is live-only: never cached, never allowed to block anything.
   if (url.hostname.endsWith('open-meteo.com')) return;
   if (url.origin !== location.origin) return;
+
+  /* The guidemap images never change under a given filename, so there's no
+     point racing the network for them on every view — and a 680 KB download
+     that times out at 2.5s would make the map feel broken. */
+  if (/\/maps\/[^/]+\.webp$/.test(url.pathname)) {
+    e.respondWith((async () => {
+      const cache = await caches.open(CACHE);
+      const hit = await cache.match(req);
+      if (hit) return hit;
+      const res = await fetch(req);
+      if (res && res.ok && res.type === 'basic') cache.put(req, res.clone()).catch(() => {});
+      return res;
+    })());
+    return;
+  }
 
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
