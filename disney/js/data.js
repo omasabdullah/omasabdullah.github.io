@@ -43,7 +43,7 @@ const PEOPLE = [
   { id: 'david',    name: 'David',    room: 'mr1', hue: 196 },
   { id: 'veronica', name: 'Veronica', room: 'mr1', hue: 180 },
   { id: 'mateo',    name: 'Mateo',    room: 'mr1', hue: 45, kind: 'baby', llExempt: true },
-  { id: 'abby',     name: 'Abby',     room: 'mr2', hue: 348 },
+  { id: 'abby',     name: 'Abigail', room: 'mr2', hue: 348 },
   { id: 'cristian', name: 'Cristian', room: 'mr2', hue: 10 },
 ];
 
@@ -51,7 +51,7 @@ const ROOMS = [
   { id: 'lk1', name: 'Lion King Suite 1', blurb: 'Omas, Maria & baby Aurora · Armando & Carolina' },
   { id: 'lk2', name: 'Lion King Suite 2', blurb: 'Jon & Noemi · Valencia, Layla & Skyla · Yasmin' },
   { id: 'mr1', name: 'Mermaid Room 1',    blurb: 'David & Veronica · baby Mateo' },
-  { id: 'mr2', name: 'Mermaid Room 2',    blurb: 'Abby & Cristian' },
+  { id: 'mr2', name: 'Mermaid Room 2',    blurb: 'Abigail & Cristian' },
 ];
 
 /* --------------------------------------------------------- shared groups -- */
