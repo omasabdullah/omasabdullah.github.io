@@ -165,7 +165,8 @@
   /* --------------------------------------------------------------- state -- */
 
   const state = { me: null, activeDay: 1, mineOnly: false, open: {}, jumpTo: null,
-    mapKey: null, mapDay: null, mapAll: false, place: null, mapFull: false };
+    mapKey: null, mapDay: null, mapAll: false, place: null, mapFull: false,
+    mapCare: false };
 
   function readURL() {
     const q = new URLSearchParams(location.search);
@@ -185,6 +186,7 @@
     const pl = q.get('place');
     state.place = state.mapKey && PARK_BY_KEY[state.mapKey]._byId[pl] ? pl : null;
     state.mapAll = q.get('all') === '1';
+    state.mapCare = q.get('care') === '1';
     const md = parseInt(q.get('mday'), 10);
     state.mapDay = state.mapKey && PARK_BY_KEY[state.mapKey].days.includes(md) ? md : null;
   }
@@ -199,6 +201,7 @@
     if (state.mapKey) q.set('map', state.mapKey);
     if (state.mapDay) q.set('mday', String(state.mapDay));
     if (state.mapAll) q.set('all', '1');
+    if (state.mapCare) q.set('care', '1');
     if (state.place) q.set('place', state.place);
     history.replaceState({}, '', location.pathname + (q.toString() ? '?' + q : ''));
   }
@@ -878,6 +881,9 @@
   const mapOf = (day) => PARK_BY_THEME[day.theme] || null;
 
   function pinClass(p) {
+    // Facilities are their own thing: never on the agenda, always worth finding.
+    if (p.kind === 'care') return 'p-care';
+    if (p.kind === 'gear') return 'p-gear';
     if (p.kind === 'gate') return 'p-gate';
     if (!p._items.length) return 'p-extra';
     if (p._items.some((i) => i.type === 'll')) return 'p-ll';
@@ -885,7 +891,8 @@
     return 'p-show';
   }
   const PIN_ICON = { 'p-gate': 'i-bus', 'p-meal': 'i-fork', 'p-show': 'i-show',
-    'p-ll': 'i-bolt', 'p-extra': 'i-pin' };
+    'p-ll': 'i-bolt', 'p-extra': 'i-pin',
+    'p-care': 'i-baby', 'p-gear': 'i-stroller' };
 
   /* Full ride names are far too long to sit beside a pin on a 390px screen. */
   function pinLabel(p) {
@@ -893,6 +900,140 @@
       .replace(/^(Star Wars: |The Many Adventures of |Journey of Water, )/i, '')
       .replace(/ [-–—] .*$/, '');
   }
+
+  /* ------------------------------------------------------------ live waits --
+   * Standby waits, ride status and showtimes from themeparks.wiki.
+   *
+   * That API was picked for one unglamorous reason: it sends
+   * `access-control-allow-origin: *`. queue-times.com has the same data and a
+   * friendlier shape, but no CORS header at all, so a browser on github.io
+   * can't read it — and there's no server here to proxy through.
+   *
+   * Everything below is best-effort and silent on failure. A wait time is a
+   * nice-to-have on top of a plan that works without it, so if the fetch is
+   * slow, blocked by park wifi, or the response shape changes under us, the
+   * card renders exactly as it did before and nobody sees an error.
+   *
+   * The one thing this never does is guess. A place shows a number only if
+   * its `live` id in maps.js is an exact entity match, resolved offline once.
+   * A wait time on the wrong ride is worse than no wait time.
+   */
+  const Waits = (function () {
+    const API = 'https://api.themeparks.wiki/v1/entity/';
+    const TTL = 90e3;  // upstream refreshes about once a minute
+    const COLD = 9e3;  // give up rather than leave a spinner sitting there
+    const data = {};   // park key -> { at, by: { uuid: entry } , err }
+    const busy = {};   // park key -> in-flight promise
+    const subs = [];
+
+    const fresh = (key) => {
+      const d = data[key];
+      return !!d && !d.err && Date.now() - d.at < TTL;
+    };
+
+    function tell(key) {
+      subs.forEach((fn) => { try { fn(key); } catch (_) { /* not our problem */ } });
+    }
+
+    function load(park) {
+      if (!park || !park.live) return Promise.resolve();
+      const key = park.key;
+      if (fresh(key)) return Promise.resolve();
+      if (busy[key]) return busy[key];
+
+      const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = setTimeout(() => { if (ctrl) ctrl.abort(); }, COLD);
+
+      busy[key] = fetch(API + park.live + '/live', {
+        signal: ctrl ? ctrl.signal : undefined,
+        headers: { accept: 'application/json' },
+      })
+        .then((r) => {
+          if (!r.ok) throw new Error('http ' + r.status);
+          return r.json();
+        })
+        .then((j) => {
+          const by = {};
+          const rows = j && Array.isArray(j.liveData) ? j.liveData : [];
+          rows.forEach((e) => { if (e && e.id) by[e.id] = e; });
+          data[key] = { at: Date.now(), by };
+        })
+        .catch(() => { data[key] = { at: Date.now(), by: {}, err: true }; })
+        .then(() => {
+          clearTimeout(timer);
+          delete busy[key];
+          tell(key);
+        });
+      return busy[key];
+    }
+
+    /** Raw entry for a place, or null. */
+    function entry(park, place) {
+      if (!park || !place || !place.live) return null;
+      const d = data[park.key];
+      return d && d.by[place.live] ? d.by[place.live] : null;
+    }
+
+    const clock = (ms) => new Date(ms).toLocaleTimeString('en-US',
+      { timeZone: TZ, hour: 'numeric', minute: '2-digit' });
+
+    /** Next performance strictly after now, as epoch ms, or null. */
+    function nextShow(e) {
+      if (!e || !Array.isArray(e.showtimes)) return null;
+      const now = Date.now();
+      let best = null;
+      for (const s of e.showtimes) {
+        const t = Date.parse(s && (s.startTime || s.endTime));
+        if (!isNaN(t) && t > now && (best === null || t < best)) best = t;
+      }
+      return best;
+    }
+
+    /**
+     * What to put on a chip for this place, or null to show nothing at all.
+     * `tone` drives the colour; `text` is already human-readable.
+     */
+    function chipFor(park, place) {
+      const e = entry(park, place);
+      if (!e) return null;
+      const st = e.status;
+
+      if (st === 'REFURBISHMENT') return { tone: 'shut', text: 'Closed for refurbishment' };
+      if (st === 'DOWN') return { tone: 'down', text: 'Temporarily down' };
+      if (st === 'CLOSED') return { tone: 'shut', text: 'Closed right now' };
+
+      const show = nextShow(e);
+      if (show !== null) return { tone: 'show', text: `Next show ${clock(show)}` };
+
+      const q = e.queue && e.queue.STANDBY;
+      const w = q && typeof q.waitTime === 'number' ? q.waitTime : null;
+      if (w !== null) {
+        if (w <= 0) return { tone: 'ok', text: 'Walk on' };
+        return { tone: w <= 20 ? 'ok' : w <= 45 ? 'mid' : 'busy', text: `${w} min wait` };
+      }
+
+      /* Operating, but nothing to report: no queue, no showtimes. True of
+         restaurants and walk-through spaces. A chip reading "Open" on a
+         table-service restaurant you already have a reservation for is noise,
+         so say nothing and let the closures be the only news. */
+      return null;
+    }
+
+    /** True once we've tried and got nothing usable for this park. */
+    const failed = (key) => !!(data[key] && data[key].err);
+    const tried = (key) => !!data[key];
+    const stamp = (key) => (data[key] && !data[key].err ? data[key].at : null);
+
+    return {
+      load,
+      chipFor,
+      failed,
+      tried,
+      stamp,
+      loading: (key) => !!busy[key],
+      onChange: (fn) => { subs.push(fn); },
+    };
+  })();
 
   const MapView = (function () {
     const FULL_LOADED = {};
@@ -1053,6 +1194,10 @@
 
     function visible() {
       return pk.places.filter((p) => {
+        /* Facilities sit on their own switch. They're not plans, so they don't
+           belong under "Everything" either — with four under-fives in the
+           group you want them on tap, not hunted for among the rides. */
+        if (p.facility) return !!state.mapCare;
         if (state.mapAll) return true;
         // Gates stay put whatever the filter — they're how you orient yourself.
         if (p.kind === 'gate') return true;
@@ -1115,6 +1260,27 @@
       </a>`;
     }
 
+    /**
+     * The live-wait chip for a place card. Returns '' whenever there's
+     * nothing honest to say, which includes: places with no `live` id (gates,
+     * lands, facilities), a park whose fetch failed, and a fetch still in
+     * flight on first open.
+     */
+    function waitChip(p) {
+      if (!p.live || !pk) return '';
+      const c = Waits.chipFor(pk, p);
+      if (!c) {
+        if (Waits.loading(pk.key) || !Waits.tried(pk.key)) {
+          return `<p class="pc-wait is-wait"><span>Checking the wait…</span></p>`;
+        }
+        return '';
+      }
+      const at = Waits.stamp(pk.key);
+      const ago = at ? ` <small>as of ${new Date(at).toLocaleTimeString('en-US',
+        { timeZone: TZ, hour: 'numeric', minute: '2-digit' })}</small>` : '';
+      return `<p class="pc-wait is-${c.tone}">${svg('i-clock')}<span>${esc(c.text)}</span>${ago}</p>`;
+    }
+
     function renderCard() {
       const card = $('#placeCard');
       const p = state.place && pk ? pk._byId[state.place] : null;
@@ -1129,11 +1295,15 @@
         <button class="pc-x" data-closeplace aria-label="Close">${svg('i-close')}</button>
         <p class="pc-land">${svg(PIN_ICON[pinClass(p)])}<span>${esc(p.land)}</span></p>
         <h3 class="pc-name">${esc(p.name)}</h3>
+        ${waitChip(p)}
         ${p.note ? `<p class="pc-note">${esc(p.note)}</p>` : ''}
         ${items.length
           ? `<div class="pc-rows">${items.map(placeRow).join('')}</div>`
-          : `<p class="pc-none">Not on our plan — just somewhere worth knowing
+          : p.facility ? ''
+            : `<p class="pc-none">Not on our plan — just somewhere worth knowing
               about if you have time to spare.</p>`}`;
+      // Waits are fetched lazily: opening a card is the signal that you care.
+      if (p.live) Waits.load(pk);
       card.hidden = false;
       // The card is already shouting the name; the pin's own label would only
       // collide with the controls.
@@ -1150,7 +1320,8 @@
       /* A pin that's been filtered out still needs to show when it's deep
          linked, so bring it back by widening the filter. */
       if (p && !visible().includes(p)) {
-        state.mapAll = true;
+        if (p.facility) state.mapCare = true;
+        else state.mapAll = true;
         renderFilters();
         renderPins();
         $$('.pin', $('#mapPins')).forEach((el) => {
@@ -1191,6 +1362,8 @@
           <button data-mapall="1" aria-pressed="${!!state.mapAll}">Everything</button>
         </span>
         ${days}
+        <button class="carebtn" data-mapcare="${state.mapCare ? '0' : '1'}"
+          aria-pressed="${!!state.mapCare}">${svg('i-baby')}<span>Baby care</span></button>
         <span class="mapcount" id="mapCount"></span>`;
     }
 
@@ -1439,6 +1612,12 @@
         if (state.place) { select(null); return; }
         if (state.mapFull) setFull(false);
       });
+
+      /* Waits land asynchronously and may never land at all. Redraw only the
+         open card: the pins don't show times, so nothing else can change. */
+      Waits.onChange((key) => {
+        if (pk && pk.key === key && state.place) renderCard();
+      });
     }
 
     /* -------------------------------------------------------------- api -- */
@@ -1490,6 +1669,19 @@
         renderPins();
         writeURL();
       },
+      setCare(on) {
+        state.mapCare = !!on;
+        /* Turning the layer off while one of its pins is open would leave the
+           card describing something no longer on screen. */
+        if (!state.mapCare && state.place && pk && pk._byId[state.place]
+            && pk._byId[state.place].facility) state.place = null;
+        renderFilters();
+        renderPins();
+        renderCard();
+        writeURL();
+      },
+      /** Ask for fresh waits — user-driven only, never on page load. */
+      waits() { if (pk) Waits.load(pk); },
       /** Jump to the map from anywhere else on the page. */
       open(key, opts) {
         const o = opts || {};
@@ -1794,11 +1986,15 @@
         return;
       }
       const tab = e.target.closest('[data-park]');
-      if (tab) { MapView.show(tab.dataset.park); return; }
+      // Picking a park is a deliberate act, so it's a fair moment to go and
+      // get the waits. Page load is not, which is why this isn't in show().
+      if (tab) { MapView.show(tab.dataset.park); MapView.waits(); return; }
       const mday = e.target.closest('[data-mapday]');
       if (mday) { MapView.setDay(parseInt(mday.dataset.mapday, 10)); return; }
       const mall = e.target.closest('[data-mapall]');
       if (mall) { MapView.setAll(mall.dataset.mapall === '1'); return; }
+      const mcare = e.target.closest('[data-mapcare]');
+      if (mcare) { MapView.setCare(mcare.dataset.mapcare === '1'); return; }
       const pinb = e.target.closest('[data-place]');
       if (pinb) { MapView.select(pinb.dataset.place); return; }
       if (e.target.closest('[data-closeplace]')) { MapView.select(null); return; }

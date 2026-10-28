@@ -1268,6 +1268,73 @@ footer.foot p + p { margin-top: 0.35rem; }
 .pin.p-gate  { --pc: var(--ink-2); }
 .pin.p-extra { --pc: var(--ink-3); }
 
+/* Facility pins. Deliberately not themed to the park accent: the point of
+   the layer is that it reads the same in all four parks, so a parent who
+   learned the cyan baby at Animal Kingdom finds it again at EPCOT. The
+   colours are the ones Disney prints on the guidemaps themselves. */
+.pin.p-care  { --pc: #0b86c3; }
+.pin.p-gear  { --pc: #5a6472; }
+
+/* Baby care toggle. It lives in the filter strip but isn't part of either
+   segmented control, because it's an overlay rather than a choice between
+   views — both it and "Our plans" can be on at once. */
+.carebtn {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  min-height: 32px; padding: 0.3rem 0.6rem;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+  color: var(--ink-2);
+  font: inherit; font-size: var(--fs-xs); font-weight: 600;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast),
+              border-color var(--t-fast);
+}
+.carebtn svg { width: 15px; height: 15px; flex: none; }
+.carebtn[aria-pressed='true'] {
+  background: #0b86c3;
+  border-color: #0b86c3;
+  color: #fff;
+}
+@media (hover: hover) {
+  .carebtn:hover { border-color: var(--ink-3); color: var(--ink); }
+  .carebtn[aria-pressed='true']:hover { background: #0a76ad; color: #fff; }
+}
+
+/* Live wait chip on the place card. Tones are coarse on purpose — the useful
+   question is "is this worth walking across the park for", not the exact
+   number, which will have moved by the time you get there anyway. */
+.pc-wait {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  margin-top: 0.45rem; padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  font-size: var(--fs-xs); font-weight: 700;
+  letter-spacing: 0.01em;
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+  color: var(--ink-2);
+}
+.pc-wait svg { width: 13px; height: 13px; flex: none; opacity: 0.85; }
+.pc-wait small { font-weight: 600; opacity: 0.7; letter-spacing: 0; }
+.pc-wait.is-ok   { background: color-mix(in srgb, #17864a 16%, var(--surface-solid)); color: #0f6236; }
+.pc-wait.is-mid  { background: color-mix(in srgb, #c8821a 18%, var(--surface-solid)); color: #8c5a06; }
+.pc-wait.is-busy { background: color-mix(in srgb, #db3540 16%, var(--surface-solid)); color: #a81d27; }
+.pc-wait.is-down { background: color-mix(in srgb, #db3540 16%, var(--surface-solid)); color: #a81d27; }
+.pc-wait.is-show { background: color-mix(in srgb, #7a46d8 16%, var(--surface-solid)); color: #5a2db3; }
+.pc-wait.is-shut { color: var(--ink-3); }
+/* No number yet. Muted rather than animated: a spinner on a wait time
+   invites you to stand there watching it. */
+.pc-wait.is-wait { color: var(--ink-3); font-weight: 600; }
+
+@media (prefers-color-scheme: dark) {
+  .pin.p-care { --pc: #2ca8e0; }
+  .pin.p-gear { --pc: #7b8694; }
+  .pc-wait.is-ok   { color: #5fd398; }
+  .pc-wait.is-mid  { color: #f0bb63; }
+  .pc-wait.is-busy,
+  .pc-wait.is-down { color: #ff8b93; }
+  .pc-wait.is-show { color: #b18bff; }
+}
+
 .pin-dot {
   position: absolute;
   left: calc(var(--ds) / -2); top: calc(var(--ds) / -2);
@@ -1572,7 +1639,7 @@ html.map-full, html.map-full body { overflow: hidden; }
 .herolinks a,
 footer.foot .footlinks a,
 .nav-brand { min-height: 44px; }
-.dh-chip, .seg button, .who-btn { min-height: 42px; }
+.dh-chip, .seg button, .who-btn, .carebtn { min-height: 42px; }
 .daypill, .db-pill { min-height: 44px; }
 .scrollcue { padding: 0.5rem 1.25rem; }
 .ptab, .pc-row { min-height: 44px; }

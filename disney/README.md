@@ -34,6 +34,18 @@ won't show up in search. Share the link directly.
   flies you to the right pin. Pin labels lay themselves out so they never cover
   another pin, and *Everything* adds the big rides we haven't booked — useful
   when a Lightning Lane falls through and you need a plan B nearby.
+- **Baby care layer** — a *Baby care* toggle on each map adds the Baby Care
+  Center (changing tables, nursing room, microwave, sink, nappies and formula
+  for sale) and the stroller and wheelchair rental desk. Four of us are under
+  five, so these shouldn't need hunting for. The coordinates were read off the
+  icons Disney prints on the guidemaps, not guessed. Baby Care and First Aid
+  share one pin because they share one building in all four parks.
+- **Live standby waits** — open a ride's pin and it shows the current standby
+  wait, or *Temporarily down* / *Closed right now*, with the time it was
+  measured. Shows get their next showtime instead. Data comes from
+  [themeparks.wiki](https://themeparks.wiki); nothing is fetched until you
+  pick a park or open a pin, never on page load. If it fails the chip simply
+  isn't there — see *Live waits* below.
 - **Lightning Lane windows** — the return window renders as a bar that fills in
   real time, with "Open now · 34 min left to tap in" / "Opens in 50 min".
   Rider Switch and the kids who don't need a pass are flagged.
@@ -59,6 +71,8 @@ lives in the URL:
 /disney/?map=hs&place=slinky   # ...zoomed and opened on Slinky Dog Dash
 /disney/?map=mk&mday=7         # Magic Kingdom, showing day 7's pins only
 /disney/?map=ak&all=1          # Animal Kingdom, every pin not just our plans
+/disney/?map=ep&care=1         # EPCOT with the baby care layer switched on
+/disney/?map=mk&place=babycare # straight to the Baby Care Center
 ```
 
 The `day` parameter updates itself as you scroll, so "copy link" always points
@@ -125,9 +139,14 @@ resolution. `x: 0.5, y: 0.5` is dead centre.
 | `name` | must match the agenda item's name exactly to auto-link |
 | `alias` | extra names that should also match |
 | `short` | shorter label drawn on the map when `name` is too long |
-| `kind` | `ll` / `meal` / `show` / `gate` — picks the pin's colour and icon |
+| `kind` | `ll` / `meal` / `show` / `gate` / `care` / `gear` — picks the pin's colour and icon |
 | `extra: true` | not in our plans; hidden until *Everything* is selected |
+| `facility: true` | a Baby Care or rental pin; shown only by the *Baby care* toggle, and never by *Everything* — it isn't a plan |
+| `live` | themeparks.wiki entity UUID, for the standby wait chip |
 | `note` | the line under the name, e.g. height requirements |
+
+Each park object also takes a `live` UUID of its own — that's the entity whose
+`/live` endpoint is fetched for the whole park.
 
 To place a new pin, open the map at `?map=<key>`, zoom to the spot, and read
 the coordinates off the illustration — or measure against the master PNG in
@@ -143,6 +162,40 @@ cwebp -q 76 -m 6 -af -pass 6 -sharp_yuv mk.png -o maps/mk-full.webp
 ```
 
 New or renamed images must be added to `SHELL` in `sw.js`.
+
+## Live waits
+
+Standby waits, ride status and showtimes come from
+`api.themeparks.wiki/v1/entity/<uuid>/live`.
+
+That API was chosen for one unglamorous reason: it sends
+`access-control-allow-origin: *`. `queue-times.com` has the same data in a
+friendlier shape but sends no CORS header at all, so a browser on
+`github.io` cannot read it, and there is no server here to proxy through.
+
+Ground rules, all of them load-bearing:
+
+- **Never on page load.** A fetch happens only when you pick a park tab or
+  open a pin that has a `live` id. The agenda has to work on a dead
+  connection, so nothing on the critical path waits for a third party.
+- **Never cached.** `sw.js` passes `themeparks.wiki` straight through. A
+  stale wait time is worse than no wait time.
+- **Fails silently.** 9-second timeout, then the chip just isn't rendered.
+  No error, no retry loop, no spinner left spinning. Verified by blocking the
+  domain outright: the place card renders exactly as it did before.
+- **Never guessed.** A pin shows a number only if its `live` UUID is an exact
+  entity match, resolved offline once and written into `maps.js`. Fuzzy name
+  matching would eventually put the wrong wait on the wrong ride, which is
+  worse than showing nothing.
+- **Only when there's news.** A ride that's open with no reported queue, or a
+  restaurant that's simply operating, gets no chip — "Open" on a table you
+  already have booked is noise. Cinderella Castle and the Tree of Life have
+  no `live` id on purpose: the API calls them attractions and reports them
+  closed overnight, which is nonsense for a landmark you can see from
+  anywhere in the park.
+
+Rate limit is 300 requests per 60 seconds; responses are cached in memory for
+90 seconds, which is roughly how often the upstream data moves.
 
 ## Layout
 

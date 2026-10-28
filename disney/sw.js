@@ -12,7 +12,7 @@
  * Bump CACHE on every deploy.
  */
 
-const CACHE = 'disney-2026-v4';
+const CACHE = 'disney-2026-v5';
 const TIMEOUT = 2500; // park wifi that half-answers is worse than no wifi
 
 /* Only the small guidemaps are pre-cached: four of them cost about 510 KB,
@@ -58,8 +58,13 @@ self.addEventListener('fetch', (e) => {
 
   const url = new URL(req.url);
 
-  // Weather is live-only: never cached, never allowed to block anything.
+  /* Live data is live-only: never cached, never allowed to block anything.
+     Weather comes from open-meteo, ride waits from themeparks.wiki. Both are
+     covered by the cross-origin check below; they're named here so it's clear
+     that passing them through is the intent and not an oversight. A cached
+     wait time is a lie, and a stale one is worse than none. */
   if (url.hostname.endsWith('open-meteo.com')) return;
+  if (url.hostname.endsWith('themeparks.wiki')) return;
   if (url.origin !== location.origin) return;
 
   /* The guidemap images never change under a given filename, so there's no
