@@ -8,6 +8,7 @@
    Lightning Lane windows use { t: start, end: end }.
    `who` is an array of person ids (see PEOPLE below) — or the string "all".
    `riderSwitch` lists ids who use Rider Switch instead of riding.
+   `quick: true` on a meal means counter service, not a reservation.
    `place` pins the item on the park map — see js/maps.js for the ids. It is
    only needed when the title differs from the name of the place; an exact
    title match finds the pin on its own.
@@ -168,13 +169,28 @@ const DAYS = [
     items: [
       { t: '06:45', type: 'resort', title: 'Wake up & costumes on!',
         note: 'Valencia, Layla & Skyla dress up.' },
-      { t: '07:45', type: 'travel', title: 'Skyliner to Hollywood Studios',
-        note: 'Change at Caribbean Beach.' },
-      { t: '08:45', type: 'park', title: 'Arrive & walk to Toy Story Land', place: 'tsland',
-        note: 'Early Entry starts 8:30 AM.' },
+      { t: '07:30', end: '08:15', type: 'meal', meal: 'Breakfast', quick: true,
+        title: 'Breakfast at Landscape of Flavors', who: 'all',
+        note: 'The food court at Art of Animation. Wrap up by 8:15 — sixteen of us '
+          + 'leaving a table takes longer than you think.' },
+      { t: '08:15', type: 'travel', title: 'Wrap up & walk to the Skyliner' },
+      { t: '08:30', type: 'travel', title: 'Skyliner to Hollywood Studios',
+        note: 'Change at Caribbean Beach. About 20 minutes door to door, but 8:30 is '
+          + 'the busiest the station gets — if the queue is long we still have until '
+          + '10:10 to tap into Slinky.' },
+      { t: '09:00', type: 'park', title: 'Arrive & head for Toy Story Land', place: 'tsland',
+        note: 'Regular 9 AM opening — we are trading Early Entry for a calmer start. '
+          + 'Toy Story Land is at the back of the park, so keep moving: the Slinky '
+          + 'window opens at 9:10.' },
       { t: '09:10', end: '10:10', type: 'll', pass: 'multi', title: 'Slinky Dog Dash',
         who: G.bigTwelve, riderSwitch: ['valencia'], split: true,
-        note: "We'll already be in Toy Story Land when the window opens." },
+        note: 'We will be walking in as the window opens, but it stays open a full '
+          + 'hour — no need to run.' },
+      { t: '09:10', type: 'split', title: 'Alien Swirling Saucers with the little ones',
+        place: 'swirl',
+        note: 'Whichever group is not on Slinky first brings the kids here. It is a '
+          + 'walk-on, no Lightning Lane needed, then swap over. Note the 32"/81 cm '
+          + 'limit: Layla and Skyla are fine, Aurora and Mateo will need to watch.' },
       { t: '10:10', end: '11:10', type: 'll', pass: 'multi', title: 'Toy Story Mania!',
         who: 'all', note: 'Same area as Slinky. Ride it next, lunch is at 11:00 AM.' },
       { t: '11:00', type: 'meal', meal: 'Lunch', title: 'Roundup Rodeo BBQ', who: 'all',

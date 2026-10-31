@@ -211,7 +211,7 @@ const PARK_MAPS = [
         note: 'Inside Toy Story Land, a two minute walk from Slinky and Mania.' },
       { live: 'd56506e2-6ad3-443a-8065-fea37987248d',
         id: 'swirl', name: 'Alien Swirling Saucers', land: 'Toy Story Land',
-        x: 0.478, y: 0.167, extra: true,
+        x: 0.478, y: 0.167,
         note: 'Gentle spinner. 32"/81 cm.' },
       { live: '1a2e70d9-50d5-4140-b69e-799e950f7d18',
         id: 'rotr', name: 'Star Wars: Rise of the Resistance', land: "Star Wars: Galaxy's Edge",

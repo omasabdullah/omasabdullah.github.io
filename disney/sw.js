@@ -12,7 +12,7 @@
  * Bump CACHE on every deploy.
  */
 
-const CACHE = 'disney-2026-v5';
+const CACHE = 'disney-2026-v6';
 const TIMEOUT = 2500; // park wifi that half-answers is worse than no wifi
 
 /* Only the small guidemaps are pre-cached: four of them cost about 510 KB,

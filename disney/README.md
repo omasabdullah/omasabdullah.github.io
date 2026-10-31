@@ -140,7 +140,7 @@ resolution. `x: 0.5, y: 0.5` is dead centre.
 | `alias` | extra names that should also match |
 | `short` | shorter label drawn on the map when `name` is too long |
 | `kind` | `ll` / `meal` / `show` / `gate` / `care` / `gear` — picks the pin's colour and icon |
-| `extra: true` | not in our plans; hidden until *Everything* is selected |
+| `extra: true` | marks a pin that nothing on the agenda points at, so it only appears under *Everything*. It's a readability marker, not a switch — the filter actually keys off whether any agenda item resolves to the pin, so adding a `place:` to `data.js` promotes the pin on its own. Keep the two in step. |
 | `facility: true` | a Baby Care or rental pin; shown only by the *Baby care* toggle, and never by *Everything* — it isn't a plan |
 | `live` | themeparks.wiki entity UUID, for the standby wait chip |
 | `note` | the line under the name, e.g. height requirements |

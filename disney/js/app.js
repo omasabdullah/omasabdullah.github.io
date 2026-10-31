@@ -303,7 +303,11 @@
 
   function kindLabel(item) {
     if (item.type === 'll') return `Lightning Lane · ${item.pass === 'single' ? 'Single Pass' : 'Multi Pass'}`;
-    if (item.type === 'meal') return `${item.meal} reservation`;
+    // A food court has no booking, and labelling one "reservation" would send
+    // someone looking for a table that was never held for them.
+    if (item.type === 'meal') {
+      return item.quick ? `${item.meal} · quick service` : `${item.meal} reservation`;
+    }
     if (item.type === 'optional') return 'Optional';
     return (TYPE_META[item.type] || {}).label || '';
   }
